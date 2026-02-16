@@ -1,0 +1,27 @@
+###
+# @name check health
+
+GET {{endpoint}}/health
+
+###
+# @name check health with auth
+
+GET {{endpoint}}/health
+Authorization: Bearer {{token}}
+
+###
+# @name list tasks
+GET {{endpoint}}/tasks
+Authorization: Bearer {{token}}
+
+###
+# @name post new task
+
+POST {{endpoint}}/tasks
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "project": "{{project}}",
+  "task": "Fix the login bug described in issue #42"
+}

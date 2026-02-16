@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '$FILES' | jq -r '.[] | select(endswith(\".py\"))' | xargs -r uv run black"
+          },
+          {
+            "type": "command",
+            "command": "echo '$FILES' | jq -r '.[] | select(endswith(\".md\"))' | xargs -r uv run mdformat"
+          },
+          {
+            "type": "command",
+            "command": "echo '$FILES' | jq -r '.[] | select(endswith(\".yaml\") or endswith(\".yml\"))' | xargs -r uv run yamlfix"
+          },
+          {
+            "type": "command",
+            "command": "echo '$FILES' | jq -r '.[] | select(endswith(\".json\"))' | xargs -r bash -c 'for f in \"$@\"; do jq \".\" \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; done' --"
+          }
+        ]
+      }
+    ]
+  }
+}

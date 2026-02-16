@@ -1,0 +1,10 @@
+.venv
+.idea
+.env
+
+__pycache__
+*.pyc
+*.egg-info
+
+/projects
+http-client.private.env.json
