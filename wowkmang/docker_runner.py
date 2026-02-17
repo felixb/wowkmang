@@ -1,5 +1,6 @@
 import logging
 import shlex
+import uuid
 
 from pydantic import BaseModel
 
@@ -61,11 +62,9 @@ class DockerRunner:
         except Exception:
             logger.warning("Could not pull %s — will try to use local image", image)
 
-    def create_volume(self, prefix: str = "wowkmang") -> str:
+    def create_volume(self, prefix: str = "wowkmang", suffix: str | None = None) -> str:
         """Create a Docker named volume with wowkmang label. Returns volume name."""
-        import uuid
-
-        name = f"{prefix}-{uuid.uuid4().hex[:12]}"
+        name = f"{prefix}-{suffix or uuid.uuid4().hex[:12]}"
         self.client.volumes.create(name=name, labels={self.VOLUME_LABEL: "true"})
         logger.debug("Created volume %s", name)
         return name

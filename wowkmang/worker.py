@@ -92,8 +92,12 @@ class Worker:
             return
 
         start_time = datetime.now(timezone.utc)
-        work_volume = self.docker_runner.create_volume(prefix="wowkmang-work")
-        session_volume = self.docker_runner.create_volume(prefix="wowkmang-session")
+        work_volume = self.docker_runner.create_volume(
+            prefix="wowkmang-work", suffix=task.id
+        )
+        session_volume = self.docker_runner.create_volume(
+            prefix="wowkmang-session", suffix=task.id
+        )
         self._seed_claude_config(session_volume, project.docker_image)
 
         try:
