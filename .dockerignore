@@ -4,9 +4,6 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
-data/
-*.db
-
 .git/
 .gitignore
 .idea/
@@ -16,5 +13,7 @@ data/
 docs/
 *.md
 
-build-branch.sh
-ship.sh
+/projects
+/data
+/cache
+/tasks

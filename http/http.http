@@ -23,5 +23,6 @@ Content-Type: application/json
 
 {
   "project": "{{project}}",
-  "task": "Fix the login bug described in issue #42"
+  "task": "Create an empty file; foo.md",
+  "model": "haiku"
 }

@@ -2,19 +2,23 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class GlobalConfig(BaseSettings):
-    model_config = {"env_prefix": "WOWKMANG_"}
+    model_config = SettingsConfigDict(
+        env_prefix="WOWKMANG_", env_file=".env", env_file_encoding="utf-8"
+    )
 
-    host_data_dir: str = "/opt/wowkmang"
+    cache_volume: str = "wowkmang-cache"
+    host_claude_config_dir: str = ""
     projects_dir: Path = Path("./projects")
     tasks_dir: Path = Path("./tasks")
-    cache_dir: Path = Path("./cache")
     host: str = "0.0.0.0"
     port: int = 8484
     api_tokens: str = ""
+    pull_token: str = ""
+    keep_workdir: bool = False
 
 
 class GitHubLabels(BaseModel):

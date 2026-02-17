@@ -1,0 +1,18 @@
+---
+name: myproject
+repo: https://github.com/user/project
+ref: main
+credentials:
+  github_token: ghp_xxxxxxxxxxxxxxxxxxxx
+default_model: claude-sonnet-4-5-20250929
+extra_instructions: |
+  Always write tests for new functionality.
+docker_image: ghcr.io/anthropics/claude-code:latest
+timeout_minutes: 30
+max_fix_attempts: 2
+pre_task: [uv sync]
+post_task: [uv run pytest]
+post_task_policy: fix_or_warn  # fail | warn | fix_or_fail | fix_or_warn
+github_labels:
+  trigger: wowkmang
+webhook_secret: whsec_xxxxxxxxxxxx

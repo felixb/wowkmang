@@ -4,7 +4,6 @@ import yaml
 from wowkmang.auth import hash_token
 from wowkmang.config import GlobalConfig
 
-
 SAMPLE_PROJECT = {
     "name": "testproject",
     "repo": "https://github.com/user/testproject",
@@ -41,9 +40,8 @@ def tmp_tasks_dir(tmp_path):
 @pytest.fixture
 def global_config(tmp_projects_dir, tmp_tasks_dir):
     return GlobalConfig(
-        host_data_dir="/opt/wowkmang",
+        cache_volume="wowkmang-cache",
         projects_dir=tmp_projects_dir,
         tasks_dir=tmp_tasks_dir,
-        cache_dir=tmp_tasks_dir.parent / "cache",
         api_tokens=TEST_API_TOKEN_HASH,
     )

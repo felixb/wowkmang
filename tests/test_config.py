@@ -11,19 +11,17 @@ from wowkmang.config import (
 
 class TestGlobalConfig:
     def test_defaults(self):
-        config = GlobalConfig(
-            _env_prefix="WOWKMANG_TEST_UNUSED_",
-        )
+        config = GlobalConfig()
         assert config.host == "0.0.0.0"
         assert config.port == 8484
 
     def test_custom_values(self):
         config = GlobalConfig(
-            host_data_dir="/data",
+            cache_volume="my-cache",
             port=9000,
             api_tokens="abc,def",
         )
-        assert config.host_data_dir == "/data"
+        assert config.cache_volume == "my-cache"
         assert config.port == 9000
         assert config.api_tokens == "abc,def"
 

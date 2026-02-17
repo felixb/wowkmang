@@ -9,6 +9,7 @@ Test framework: pytest, run `uv run pytest`
 Formatting: black (python), mdformat (markdown), yamlfix (yaml), jq (json)
 Style: imports at top of file, never inside functions
 Deployable: docker
+Claude models: only specify short name like opus, sonnet, haiku
 
 ## Rules
 
