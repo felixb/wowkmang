@@ -95,15 +95,10 @@ class Worker:
         work_volume = self.docker_runner.create_volume(
             prefix="wowkmang-work", suffix=task.id
         )
-        session_volume = self.docker_runner.create_volume(
-            prefix="wowkmang-session", suffix=task.id
-        )
-        self._seed_claude_config(session_volume, project.docker_image)
+        self._seed_claude_config(work_volume, project.docker_image)
 
         try:
-            self._run_task_pipeline(
-                task_file, task, project, work_volume, session_volume, start_time
-            )
+            self._run_task_pipeline(task_file, task, project, work_volume, start_time)
         except Exception as e:
             logger.exception("Unhandled error processing task %s", task.id)
             task.result = TaskResult(
@@ -113,7 +108,6 @@ class Worker:
             )
             fail_task(self.config.tasks_dir, task_file, task)
         finally:
-            self.docker_runner.remove_volume(session_volume)
             if self.config.keep_workdir:
                 logger.info("Keeping work volume for inspection: %s", work_volume)
             else:
@@ -125,7 +119,6 @@ class Worker:
         task: Task,
         project: ProjectConfig,
         work_volume: str,
-        session_volume: str,
         start_time: datetime,
     ) -> None:
         github_token = project.credentials.get("github_token")
@@ -146,7 +139,6 @@ class Worker:
         cache_subdir = RepoCache.cache_subdir(task.repo)
         copy_result = self.docker_runner.copy_to_workdir(
             work_volume=work_volume,
-            session_volume=session_volume,
             cache_subdir=cache_subdir,
             image=image,
         )
@@ -178,7 +170,6 @@ class Worker:
             model=model,
             project=project,
             timeout_minutes=project.timeout_minutes,
-            session_dir=session_volume,
         )
         self._log_step("claude_code", cc_result, work_volume, image)
         if cc_result.exit_code != 0:
@@ -278,7 +269,6 @@ class Worker:
             hook_output,
             project=project,
             work_dir=work_volume,
-            session_dir=session_volume,
         )
         self._log_step(
             "summary",
@@ -429,8 +419,8 @@ class Worker:
                     "Failed task %s after crash recovery — max attempts", task.id
                 )
 
-    def _seed_claude_config(self, session_volume: str, image: str) -> None:
-        """Copy host claude config into session volume so the container has auth credentials."""
+    def _seed_claude_config(self, work_volume: str, image: str) -> None:
+        """Copy host claude config into work volume so the container has auth credentials."""
         source = self.config.host_claude_config_dir
         if not source:
             logger.warning(
@@ -440,10 +430,10 @@ class Worker:
         self.docker_runner.seed_volume(
             image=image,
             source_host_path=source,
-            target_volume=session_volume,
-            target_path="/target",
+            target_volume=work_volume,
+            target_path="/workspace/.claude-config",
         )
-        logger.debug("Seeded session volume with claude config from %s", source)
+        logger.debug("Seeded work volume with claude config from %s", source)
 
     def _commit_changes(self, work_volume: str, image: str) -> ContainerResult:
         """Stage and commit any files Claude left uncommitted."""

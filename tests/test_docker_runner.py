@@ -104,10 +104,15 @@ class TestRunClaudeCode:
 
         command = docker_client.containers.run.call_args.kwargs["command"]
         assert isinstance(command, list)
-        assert command[0] == "claude"
-        assert "--model" in command
-        assert "sonnet" in command
-        assert "Fix the bug" in command
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        # The full command is wrapped in sh -c, check the script contains the expected parts
+        script = command[2]
+        assert "claude" in script
+        assert "--model" in script
+        assert "sonnet" in script
+        assert "Fix the bug" in script
+        assert "mkdir -p /root/.claude" in script
 
     def test_extra_instructions_prepended_to_prompt(self):
         container = _mock_container()
@@ -211,24 +216,6 @@ class TestRunClaudeCode:
         labels = docker_client.containers.run.call_args.kwargs["labels"]
         assert labels == {"wowkmang": "true"}
 
-    def test_session_dir_mounted_when_provided(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
-
-        runner.run_claude_code(
-            work_dir="/w",
-            task_prompt="t",
-            model="s",
-            project=_make_project(),
-            timeout_minutes=1,
-            session_dir="session-vol-123",
-        )
-
-        volumes = docker_client.containers.run.call_args.kwargs["volumes"]
-        assert "session-vol-123" in volumes
-        assert volumes["session-vol-123"]["bind"] == "/root/.claude"
-
     def test_continue_session_flag(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
@@ -245,9 +232,12 @@ class TestRunClaudeCode:
         )
 
         command = docker_client.containers.run.call_args.kwargs["command"]
-        assert "--continue" in command
-        assert "--output-format" in command
-        assert "json" in command
+        assert isinstance(command, list)
+        assert command[0] == "sh"
+        script = command[2]
+        assert "--continue" in script
+        assert "--output-format" in script
+        assert "json" in script
 
 
 class TestRunHooks:
@@ -572,14 +562,13 @@ class TestEnsureImage:
 
 
 class TestCopyToWorkdir:
-    def test_copies_cache_and_session_into_workdir(self):
+    def test_copies_cache_into_workdir(self):
         container = _mock_container(exit_code=0, logs=b"copied")
         docker_client = _mock_docker_client(container)
         runner = DockerRunner(docker_client, cache_volume="my-cache")
 
         result = runner.copy_to_workdir(
             work_volume="work-vol",
-            session_volume="session-vol",
             cache_subdir="github.com_user_project",
             image="img:latest",
         )
@@ -591,8 +580,6 @@ class TestCopyToWorkdir:
         assert kwargs["volumes"]["work-vol"]["mode"] == "rw"
         assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
         assert kwargs["volumes"]["my-cache"]["mode"] == "ro"
-        assert kwargs["volumes"]["session-vol"]["bind"] == "/session"
-        assert kwargs["volumes"]["session-vol"]["mode"] == "ro"
 
     def test_command_contains_cache_subdir(self):
         container = _mock_container()
@@ -601,7 +588,6 @@ class TestCopyToWorkdir:
 
         runner.copy_to_workdir(
             work_volume="work-vol",
-            session_volume="session-vol",
             cache_subdir="github.com_org_repo",
             image="img",
         )
@@ -609,4 +595,3 @@ class TestCopyToWorkdir:
         command = docker_client.containers.run.call_args.kwargs["command"]
         assert "github.com_org_repo" in command
         assert "/workspace/.cache/" in command
-        assert "/workspace/.claude/" in command

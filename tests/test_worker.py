@@ -370,11 +370,10 @@ class TestKeepWorkdir:
 
         setup["worker"]._process_task(task_file, task)
 
-        # remove_volume called for both work and session volumes
+        # remove_volume called for work volume (which contains both code and session)
         remove_calls = setup["docker_runner"].remove_volume.call_args_list
         volume_names = [str(c.args[0]) for c in remove_calls]
         assert any("work" in v for v in volume_names)
-        assert any("session" in v for v in volume_names)
 
     @patch("wowkmang.worker.GitHubClient")
     def test_workdir_preserved_when_keep_workdir(self, MockGH, setup):
@@ -390,10 +389,9 @@ class TestKeepWorkdir:
 
         setup["worker"]._process_task(task_file, task)
 
-        # remove_volume should be called for session but NOT for work
+        # remove_volume should NOT be called for work volume (it contains both code and session)
         remove_calls = setup["docker_runner"].remove_volume.call_args_list
         volume_names = [str(c.args[0]) for c in remove_calls]
-        assert any("session" in v for v in volume_names)
         assert not any("work" in v for v in volume_names)
 
 
@@ -460,13 +458,13 @@ class TestSeedClaudeConfig:
             summary_generator=MagicMock(),
         )
 
-        worker._seed_claude_config("session-vol-123", "img:latest")
+        worker._seed_claude_config("work-vol-123", "img:latest")
 
         docker_runner.seed_volume.assert_called_once_with(
             image="img:latest",
             source_host_path="/home/user/.claude",
-            target_volume="session-vol-123",
-            target_path="/target",
+            target_volume="work-vol-123",
+            target_path="/workspace/.claude-config",
         )
 
     def test_missing_config_dir_does_not_call_seed(self, tmp_path):
@@ -726,6 +724,8 @@ class TestCopyToWorkdir:
 
         setup["docker_runner"].copy_to_workdir.assert_called_once()
         call_kwargs = setup["docker_runner"].copy_to_workdir.call_args.kwargs
-        assert call_kwargs["work_volume"] == "wowkmang-work-abc123"
-        assert call_kwargs["session_volume"] == "wowkmang-session-def456"
+        assert "work_volume" in call_kwargs
+        assert (
+            "session_volume" not in call_kwargs
+        )  # session is now consolidated into work_volume
         assert call_kwargs["cache_subdir"] == "github.com_user_project"

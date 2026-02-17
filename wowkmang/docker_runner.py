@@ -125,20 +125,17 @@ class DockerRunner:
     def copy_to_workdir(
         self,
         work_volume: str,
-        session_volume: str,
         cache_subdir: str,
         image: str,
     ) -> ContainerResult:
-        """Copy bare repo cache and .claude session dir into workdir for self-contained debugging."""
+        """Copy bare repo cache into workdir for self-contained debugging."""
         script = (
             f"mkdir -p /workspace/.cache && "
-            f"cp -a /cache/{cache_subdir} /workspace/.cache/{cache_subdir} && "
-            f"cp -a /session/. /workspace/.claude/"
+            f"cp -a /cache/{cache_subdir} /workspace/.cache/{cache_subdir}"
         )
         volumes = {
             work_volume: {"bind": "/workspace", "mode": "rw"},
             self.cache_volume: {"bind": "/cache", "mode": "ro"},
-            session_volume: {"bind": "/session", "mode": "ro"},
         }
         return self._run_container(
             image=image,
@@ -156,7 +153,6 @@ class DockerRunner:
         model: str,
         project: ProjectConfig,
         timeout_minutes: int,
-        session_dir: str | None = None,
         continue_session: bool = False,
         output_format: str | None = None,
     ) -> ContainerResult:
@@ -179,11 +175,15 @@ class DockerRunner:
             **project.credentials,
         }
 
-        volumes = self._build_volumes(work_dir, session_dir=session_dir)
+        volumes = self._build_volumes(work_dir)
+
+        # Prepend bootstrap script to copy claude config from volume to /root/.claude
+        bootstrap = "mkdir -p /root/.claude && cp -a /workspace/.claude-config/. /root/.claude && "
+        command_str = bootstrap + " ".join(shlex.quote(str(arg)) for arg in command)
 
         return self._run_container(
             image=project.docker_image,
-            command=command,
+            command=["sh", "-c", command_str],
             environment=environment,
             volumes=volumes,
             timeout_seconds=timeout_minutes * 60,
@@ -237,14 +237,11 @@ class DockerRunner:
         except Exception:
             pass
 
-    def _build_volumes(self, work_dir: str, session_dir: str | None = None) -> dict:
-        volumes = {
+    def _build_volumes(self, work_dir: str) -> dict:
+        return {
             work_dir: {"bind": "/workspace", "mode": "rw"},
             self.cache_volume: {"bind": "/cache", "mode": "rw"},
         }
-        if session_dir:
-            volumes[session_dir] = {"bind": "/root/.claude", "mode": "rw"}
-        return volumes
 
     def _run_container(
         self,
