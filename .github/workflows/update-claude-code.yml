@@ -1,0 +1,42 @@
+name: Update Claude Code
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  update-claude-code:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Fetch latest Claude Code version
+        id: fetch-version
+        run: |
+          LATEST_VERSION=$(curl -s https://registry.npmjs.org/@anthropic-ai/claude-code/latest | jq -r '.version')
+          echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "Latest Claude Code version: $LATEST_VERSION"
+
+      - name: Check if update is needed
+        id: check-update
+        run: |
+          # This step can be expanded to check current version in your project
+          # For now, we'll always proceed with the update
+          echo "update_needed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push update
+        if: steps.check-update.outputs.update_needed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Update your project files here with the new version
+          # Example: update package.json or docker files as needed
+          
+          git add .
+          git commit -m "chore: update claude-code to ${{ steps.fetch-version.outputs.latest_version }}" || echo "No changes to commit"
+          git push origin main
