@@ -87,15 +87,30 @@ class DockerRunner:
         timeout_seconds: int = 300,
     ) -> ContainerResult:
         """Run a shell command in a container with work volume at /workspace and cache at /cache."""
+        # TODO check if we really need this after running container as non root and/or fix it by changing permissions on the files instead
         safe_dirs = "git config --global --add safe.directory '*'"
-        full_command = f"{safe_dirs} && {command}"
-        volumes = {
-            work_volume: {"bind": "/workspace", "mode": "rw"},
-            self.cache_volume: {"bind": "/cache", "mode": "rw"},
-        }
+        full_command = ["sh", "-c", f"{safe_dirs} && {command}"]
+        return self.run_command(
+            work_dir=work_volume,
+            command=full_command,
+            image=image,
+            environment=environment or {},
+            timeout_seconds=timeout_seconds,
+        )
+
+    def run_command(
+        self,
+        work_dir: str,
+        command: str | list[str],
+        image: str,
+        environment: dict | None = None,
+        timeout_seconds: int = 300,
+    ) -> ContainerResult:
+        """Run a command in a container with wiring (volumes, etc)."""
+        volumes = self._build_volumes(work_dir)
         return self._run_container(
             image=image,
-            command=f"sh -c {shlex.quote(full_command)}",
+            command=command,
             environment=environment or {},
             volumes=volumes,
             timeout_seconds=timeout_seconds,
@@ -115,7 +130,7 @@ class DockerRunner:
         }
         return self._run_container(
             image=image,
-            command="sh -c 'cp -a /source/. /target/'",
+            command=["cp", "-a", "/source/.", "/target/"],
             environment={},
             volumes=volumes,
             timeout_seconds=60,
@@ -139,7 +154,7 @@ class DockerRunner:
         }
         return self._run_container(
             image=image,
-            command=f"sh -c {shlex.quote(script)}",
+            command=["sh", "-c", script],
             environment={},
             volumes=volumes,
             timeout_seconds=120,
@@ -175,17 +190,17 @@ class DockerRunner:
             **project.credentials,
         }
 
-        volumes = self._build_volumes(work_dir)
-
         # Prepend bootstrap script to copy claude config from volume to /root/.claude
-        bootstrap = "mkdir -p /root/.claude && cp -a /workspace/.claude-config/. /root/.claude && "
-        command_str = bootstrap + " ".join(shlex.quote(str(arg)) for arg in command)
+        bootstrap = (
+            "mkdir -p /root/.claude && cp -a /workspace/.claude-config/. /root/.claude"
+        )
+        bootstrap_command = ["sh", "-c", f'{bootstrap} && "$@"', "--"] + command
 
-        return self._run_container(
+        return self.run_command(
+            work_dir=work_dir,
+            command=bootstrap_command,
             image=project.docker_image,
-            command=["sh", "-c", command_str],
             environment=environment,
-            volumes=volumes,
             timeout_seconds=timeout_minutes * 60,
         )
 
@@ -198,15 +213,11 @@ class DockerRunner:
         """Run hook commands one by one in separate containers. Returns first failure or final success."""
         last_result = ContainerResult(exit_code=0, logs="")
         for cmd in commands:
-            command = f"sh -c {shlex.quote(cmd)}"
-            environment = {**project.credentials}
-            volumes = self._build_volumes(work_dir)
-
-            last_result = self._run_container(
+            last_result = self.run_command(
+                work_dir=work_dir,
+                command=cmd,
                 image=project.docker_image,
-                command=command,
-                environment=environment,
-                volumes=volumes,
+                environment=project.credentials,
                 timeout_seconds=project.timeout_minutes * 60,
             )
             if last_result.exit_code != 0:

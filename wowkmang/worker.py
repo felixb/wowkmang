@@ -145,10 +145,10 @@ class Worker:
         self._log_step("copy_to_workdir", copy_result, work_volume, image)
 
         # Pre-task hooks
-        if project.pre_task:
-            pre_result = self.hook_runner.run_hooks(
-                project.pre_task, work_volume, project
-            )
+        if effective_pre := self.hook_runner.get_effective_pre_hooks(
+            work_volume, project
+        ):
+            pre_result = self.hook_runner.run_hooks(effective_pre, work_volume, project)
             if not pre_result.success:
                 duration = int(
                     (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -191,10 +191,11 @@ class Worker:
         hook_output = None
         post_passed = True
         fix_attempts = 0
-
-        if project.post_task:
+        if effective_post := self.hook_runner.get_effective_post_hooks(
+            work_volume, project
+        ):
             post_result = self.hook_runner.run_hooks(
-                project.post_task, work_volume, project
+                effective_post, work_volume, project
             )
 
             if not post_result.success:

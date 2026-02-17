@@ -14,6 +14,46 @@ class HookResult(BaseModel):
 class HookRunner:
     def __init__(self, docker_runner: DockerRunner):
         self.docker_runner = docker_runner
+        self._has_pre_commit_config: dict[str, bool] = {}
+
+    def _check_pre_commit_config(self, work_dir: str, project: ProjectConfig) -> bool:
+        if work_dir in self._has_pre_commit_config:
+            return self._has_pre_commit_config[work_dir]
+
+        result = self.docker_runner.run_command(
+            work_dir=work_dir,
+            command="test -f .pre-commit-config.yaml",
+            image=project.docker_image,
+            environment=project.credentials,
+            timeout_seconds=5,
+        )
+        has_config = result.exit_code == 0
+        self._has_pre_commit_config[work_dir] = has_config
+        return has_config
+
+    def get_effective_pre_hooks(
+        self, work_dir: str, project: ProjectConfig
+    ) -> list[str]:
+        commands = project.pre_task
+        if not commands and not self._check_pre_commit_config(work_dir, project):
+            return []
+        effective = list(commands)
+        if self._check_pre_commit_config(work_dir, project):
+            if not any("pre-commit install" in cmd for cmd in effective):
+                effective.append("pre-commit install")
+        return effective
+
+    def get_effective_post_hooks(
+        self, work_dir: str, project: ProjectConfig
+    ) -> list[str]:
+        commands = project.post_task
+        if not commands and not self._check_pre_commit_config(work_dir, project):
+            return []
+        effective = list(commands)
+        if self._check_pre_commit_config(work_dir, project):
+            if not any("pre-commit run" in cmd for cmd in effective):
+                effective.append("pre-commit run -a")
+        return effective
 
     def run_hooks(
         self, commands: list[str], work_dir: str, project: ProjectConfig
@@ -58,7 +98,9 @@ class FixLoop:
             )
 
             last_result = self.hook_runner.run_hooks(
-                project.post_task, work_dir, project
+                self.hook_runner.get_effective_post_hooks(work_dir, project),
+                work_dir,
+                project,
             )
 
             if last_result.success:

@@ -106,13 +106,12 @@ class TestRunClaudeCode:
         assert isinstance(command, list)
         assert command[0] == "sh"
         assert command[1] == "-c"
-        # The full command is wrapped in sh -c, check the script contains the expected parts
-        script = command[2]
-        assert "claude" in script
-        assert "--model" in script
-        assert "sonnet" in script
-        assert "Fix the bug" in script
-        assert "mkdir -p /root/.claude" in script
+        assert "mkdir -p /root/.claude" in command[2]
+        assert command[3] == "--"
+        assert command[4] == "claude"
+        assert "--model" in command
+        assert "sonnet" in command
+        assert "Fix the bug" in command
 
     def test_extra_instructions_prepended_to_prompt(self):
         container = _mock_container()
@@ -234,10 +233,9 @@ class TestRunClaudeCode:
         command = docker_client.containers.run.call_args.kwargs["command"]
         assert isinstance(command, list)
         assert command[0] == "sh"
-        script = command[2]
-        assert "--continue" in script
-        assert "--output-format" in script
-        assert "json" in script
+        assert "--continue" in command
+        assert "--output-format" in command
+        assert "json" in command
 
 
 class TestRunHooks:
@@ -383,6 +381,11 @@ class TestRunGit:
         assert result.exit_code == 0
         assert result.logs == "git output"
         kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["command"] == [
+            "sh",
+            "-c",
+            "git config --global --add safe.directory '*' && git status",
+        ]
         assert kwargs["volumes"]["work-vol-123"]["bind"] == "/workspace"
         assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
         assert kwargs["environment"]["GIT_TERMINAL_PROMPT"] == "0"
@@ -417,6 +420,7 @@ class TestSeedVolume:
 
         assert result.exit_code == 0
         kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["command"] == ["cp", "-a", "/source/.", "/target/"]
         assert kwargs["volumes"]["/home/user/.claude"]["bind"] == "/source"
         assert kwargs["volumes"]["/home/user/.claude"]["mode"] == "ro"
         assert kwargs["volumes"]["session-vol"]["bind"] == "/target"
@@ -593,5 +597,7 @@ class TestCopyToWorkdir:
         )
 
         command = docker_client.containers.run.call_args.kwargs["command"]
-        assert "github.com_org_repo" in command
-        assert "/workspace/.cache/" in command
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        assert "github.com_org_repo" in command[2]
+        assert "/workspace/.cache/" in command[2]

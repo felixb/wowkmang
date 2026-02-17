@@ -82,6 +82,8 @@ def setup(tmp_path):
     hook_runner.run_hooks.return_value = HookResult(
         success=True, output="ok", exit_code=0
     )
+    hook_runner.get_effective_pre_hooks.side_effect = lambda wd, proj: proj.pre_task
+    hook_runner.get_effective_post_hooks.side_effect = lambda wd, proj: proj.post_task
 
     fix_loop = MagicMock()
 
