@@ -1,0 +1,27 @@
+---
+name: Update Claude Code
+on:
+  schedule:
+    - cron: 0 3 * * *
+  workflow_dispatch: {}
+jobs:
+  update-claude-code:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update Claude Code version
+        id: update-version
+        run: ./scripts/update-claude-version.sh
+      - name: Commit and push update
+        if: steps.update-version.outputs.update_needed == 'true'
+        run: |-
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add images/base/Dockerfile
+          git commit -m "chore: update claude-code to ${{ steps.update-version.outputs.latest_version }}"
+          git push origin main
