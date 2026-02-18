@@ -8,7 +8,7 @@ from wowkmang.config import GlobalConfig, ProjectConfig
 from wowkmang.docker_runner import ContainerResult
 from wowkmang.hooks import HookResult
 from wowkmang.models import Task, TaskSource, TaskSourceInfo, TaskStatus, task_to_yaml
-from wowkmang.queue import ensure_queue_dirs, save_task
+from wowkmang.task_queue import ensure_queue_dirs, save_task
 from wowkmang.summary import PRMetadata
 from wowkmang.worker import Worker
 
@@ -65,15 +65,20 @@ def setup(tmp_path):
     docker_runner.copy_to_workdir.return_value = ContainerResult(
         exit_code=0, logs="copied"
     )
+    docker_runner.chown_volume.return_value = ContainerResult(exit_code=0, logs="")
+    docker_runner.chown_cache_subdir.return_value = ContainerResult(
+        exit_code=0, logs=""
+    )
 
-    def _run_git_side_effect(**kwargs):
+    def _run_command_side_effect(**kwargs):
         command = kwargs.get("command", "")
-        if "git diff origin/" in command and "--quiet" in command:
+        command_str = " ".join(command) if isinstance(command, list) else command
+        if "git diff origin/" in command_str and "--quiet" in command_str:
             # Simulate "has changes" so pipeline proceeds to push/PR
             return ContainerResult(exit_code=1, logs="")
         return ContainerResult(exit_code=0, logs="ok")
 
-    docker_runner.run_git.side_effect = _run_git_side_effect
+    docker_runner.run_command.side_effect = _run_command_side_effect
 
     repo_cache = MagicMock()
     repo_cache.prepare_workdir.return_value = "wowkmang/abc12345"
@@ -120,7 +125,7 @@ def setup(tmp_path):
 
 def _save_and_pick(config, task):
     """Save a task and move it to running (simulating pick_next_task)."""
-    from wowkmang.queue import pick_next_task
+    from wowkmang.task_queue import pick_next_task
 
     save_task(config.tasks_dir, task)
     result = pick_next_task(config.tasks_dir)
@@ -163,11 +168,11 @@ class TestProcessTask:
         assert call_kwargs["draft"] is False
         assert call_kwargs["branch"] == "wowkmang/fix-login-42"
 
-        # Push was done via docker_runner.run_git
+        # Push was done via docker_runner.run_command
         push_calls = [
             c
-            for c in setup["docker_runner"].run_git.call_args_list
-            if "git push" in str(c)
+            for c in setup["docker_runner"].run_command.call_args_list
+            if "push" in str(c.kwargs.get("command", ""))
         ]
         assert len(push_calls) >= 1
 
@@ -492,12 +497,12 @@ class TestSeedClaudeConfig:
 
 
 class TestCommitChanges:
-    def test_calls_run_git_with_commit_script(self, tmp_path):
+    def test_calls_run_command_with_commit_script(self, tmp_path):
         config = _make_config(tmp_path)
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=0, logs="")
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
 
         worker = Worker(
             config=config,
@@ -511,21 +516,48 @@ class TestCommitChanges:
 
         worker._commit_changes("work-vol", "img:latest")
 
-        docker_runner.run_git.assert_called_once()
-        call_kwargs = docker_runner.run_git.call_args.kwargs
-        assert call_kwargs["work_volume"] == "work-vol"
+        docker_runner.run_command.assert_called_once()
+        call_kwargs = docker_runner.run_command.call_args.kwargs
+        assert call_kwargs["work_dir"] == "work-vol"
         assert call_kwargs["image"] == "img:latest"
-        assert "git" in call_kwargs["command"]
-        assert "add -A" in call_kwargs["command"]
-        assert "commit" in call_kwargs["command"]
-        assert "user.name=wowkmang" in call_kwargs["command"]
+        command = call_kwargs["command"]
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        script = command[2]
+        assert "git" in script
+        assert "add -A" in script
+        assert "commit" in script
+
+    def test_uses_provided_commit_message(self, tmp_path):
+        config = _make_config(tmp_path)
+        ensure_queue_dirs(config.tasks_dir)
+
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
+
+        worker = Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+        worker._commit_changes("work-vol", "img:latest", commit_message="Fix login bug")
+
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
+        assert "Fix login bug" in script
 
     def test_nonzero_exit_raises(self, tmp_path):
         config = _make_config(tmp_path)
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=1, logs="error")
+        docker_runner.run_command.return_value = ContainerResult(
+            exit_code=1, logs="error"
+        )
 
         worker = Worker(
             config=config,
@@ -539,6 +571,61 @@ class TestCommitChanges:
 
         with pytest.raises(RuntimeError, match="Commit failed"):
             worker._commit_changes("work-vol", "img")
+
+
+class TestConfigureGit:
+    def test_runs_git_config_in_workdir(self, tmp_path):
+        config = _make_config(tmp_path)
+        ensure_queue_dirs(config.tasks_dir)
+
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
+
+        worker = Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+        worker._configure_git("work-vol", "img:latest")
+
+        docker_runner.run_command.assert_called_once()
+        call_kwargs = docker_runner.run_command.call_args.kwargs
+        assert call_kwargs["work_dir"] == "work-vol"
+        assert call_kwargs["image"] == "img:latest"
+        script = call_kwargs["command"][2]
+        assert "git config user.name" in script
+        assert "git config user.email" in script
+        assert "wowkmang" in script
+
+    def test_uses_config_values(self, tmp_path):
+        config = _make_config(tmp_path)
+        config.git_name = "mybot"
+        config.git_email = "mybot@example.com"
+        ensure_queue_dirs(config.tasks_dir)
+
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
+
+        worker = Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+        worker._configure_git("vol", "img")
+
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
+        assert "mybot" in script
+        assert "mybot@example.com" in script
 
 
 class TestExtractRepo:
@@ -555,16 +642,17 @@ class TestExtractRepo:
 class TestNoChanges:
     @patch("wowkmang.worker.GitHubClient")
     def test_no_diff_skips_push_and_pr(self, MockGH, setup):
-        """When _has_changes returns False, skip push/PR and complete with note."""
+        """When _has_any_changes returns False, skip push/PR and complete with note."""
 
-        def _run_git_no_changes(**kwargs):
+        def _run_command_no_changes(**kwargs):
             command = kwargs.get("command", "")
-            if "git diff origin/" in command and "--quiet" in command:
+            command_str = " ".join(command) if isinstance(command, list) else command
+            if "git diff origin/" in command_str and "--quiet" in command_str:
                 # exit_code=0 means no diff
                 return ContainerResult(exit_code=0, logs="")
             return ContainerResult(exit_code=0, logs="ok")
 
-        setup["docker_runner"].run_git.side_effect = _run_git_no_changes
+        setup["docker_runner"].run_command.side_effect = _run_command_no_changes
 
         task = _make_task()
         task_file, task = _save_and_pick(setup["config"], task)
@@ -578,8 +666,8 @@ class TestNoChanges:
         # No push was attempted (no call with "git push")
         push_calls = [
             c
-            for c in setup["docker_runner"].run_git.call_args_list
-            if "git push" in str(c)
+            for c in setup["docker_runner"].run_command.call_args_list
+            if "push" in str(c.kwargs.get("command", ""))
         ]
         assert len(push_calls) == 0
 
@@ -592,7 +680,7 @@ class TestNoChanges:
 
     @_patch_github
     def test_with_changes_proceeds_to_push(self, MockGH, setup):
-        """When _has_changes returns True, push and create PR normally."""
+        """When _has_any_changes returns True, push and create PR normally."""
         mock_gh = MagicMock()
         mock_gh.create_pr.return_value = {
             "number": 99,
@@ -611,20 +699,20 @@ class TestNoChanges:
         # Push happened
         push_calls = [
             c
-            for c in setup["docker_runner"].run_git.call_args_list
-            if "git push" in str(c)
+            for c in setup["docker_runner"].run_command.call_args_list
+            if "push" in str(c.kwargs.get("command", ""))
         ]
         assert len(push_calls) >= 1
 
 
 class TestLogStep:
     def test_log_step_writes_to_steps_log(self, tmp_path):
-        """_log_step calls run_git to append to steps.log."""
+        """_log_step calls run_command to append to steps.log."""
         config = _make_config(tmp_path)
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=0, logs="")
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
 
         worker = Worker(
             config=config,
@@ -639,11 +727,16 @@ class TestLogStep:
         step_result = ContainerResult(exit_code=0, logs="step output here")
         worker._log_step("test_step", step_result, "work-vol", "img:latest")
 
-        docker_runner.run_git.assert_called_once()
-        call_kwargs = docker_runner.run_git.call_args.kwargs
-        assert call_kwargs["work_volume"] == "work-vol"
+        docker_runner.run_command.assert_called_once()
+        call_kwargs = docker_runner.run_command.call_args.kwargs
+        assert call_kwargs["work_dir"] == "work-vol"
         assert call_kwargs["image"] == "img:latest"
-        assert "steps.log" in call_kwargs["command"]
+        command_str = (
+            " ".join(call_kwargs["command"])
+            if isinstance(call_kwargs["command"], list)
+            else call_kwargs["command"]
+        )
+        assert "steps.log" in command_str
 
     def test_log_step_includes_step_name_and_exit_code(self, tmp_path):
         """The log entry contains the step name and exit code."""
@@ -651,7 +744,7 @@ class TestLogStep:
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=0, logs="")
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
 
         worker = Worker(
             config=config,
@@ -666,9 +759,51 @@ class TestLogStep:
         step_result = ContainerResult(exit_code=42, logs="some output")
         worker._log_step("my_step", step_result, "vol", "img")
 
-        command = docker_runner.run_git.call_args.kwargs["command"]
-        assert "my_step" in command
-        assert "exit_code=42" in command
+        command = docker_runner.run_command.call_args.kwargs["command"]
+        command_str = " ".join(command) if isinstance(command, list) else command
+        assert "my_step" in command_str
+        assert "exit_code=42" in command_str
+
+
+class TestHasAnyChanges:
+    def _make_worker(self, tmp_path, docker_runner):
+        config = _make_config(tmp_path)
+        ensure_queue_dirs(config.tasks_dir)
+        return Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+    def test_returns_true_when_committed_diff_exists(self, tmp_path):
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=1, logs="")
+        worker = self._make_worker(tmp_path, docker_runner)
+        assert worker._has_any_changes("vol", "main", "img") is True
+
+    def test_returns_true_when_uncommitted_changes(self, tmp_path):
+        docker_runner = MagicMock()
+
+        def side_effect(**kwargs):
+            cmd = kwargs.get("command", [])
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "git diff" in cmd_str and "--quiet" in cmd_str:
+                return ContainerResult(exit_code=0, logs="")  # no committed diff
+            return ContainerResult(exit_code=1, logs="")  # uncommitted changes
+
+        docker_runner.run_command.side_effect = side_effect
+        worker = self._make_worker(tmp_path, docker_runner)
+        assert worker._has_any_changes("vol", "main", "img") is True
+
+    def test_returns_false_when_nothing_changed(self, tmp_path):
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
+        worker = self._make_worker(tmp_path, docker_runner)
+        assert worker._has_any_changes("vol", "main", "img") is False
 
 
 class TestHasChanges:
@@ -677,7 +812,7 @@ class TestHasChanges:
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=1, logs="")
+        docker_runner.run_command.return_value = ContainerResult(exit_code=1, logs="")
 
         worker = Worker(
             config=config,
@@ -696,7 +831,7 @@ class TestHasChanges:
         ensure_queue_dirs(config.tasks_dir)
 
         docker_runner = MagicMock()
-        docker_runner.run_git.return_value = ContainerResult(exit_code=0, logs="")
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
 
         worker = Worker(
             config=config,
@@ -731,3 +866,70 @@ class TestCopyToWorkdir:
             "session_volume" not in call_kwargs
         )  # session is now consolidated into work_volume
         assert call_kwargs["cache_subdir"] == "github.com_user_project"
+
+
+class TestChownVolume:
+    @_patch_github
+    def test_chown_volume_called_in_pipeline(self, MockGH, setup):
+        """Verify chown_volume is called before prepare_workdir."""
+        mock_gh = MagicMock()
+        mock_gh.create_pr.return_value = {"number": 101, "html_url": "url"}
+        MockGH.return_value = mock_gh
+
+        task = _make_task()
+        task_file, task = _save_and_pick(setup["config"], task)
+
+        setup["worker"]._process_task(task_file, task)
+
+        setup["docker_runner"].chown_volume.assert_called_once()
+        call_kwargs = setup["docker_runner"].chown_volume.call_args.kwargs
+        assert call_kwargs["uid"] == "1000:1000"
+        assert "work_volume" in call_kwargs
+
+    @_patch_github
+    def test_chown_uses_project_uid_override(self, MockGH, setup):
+        """When project has container_uid, use it instead of global default."""
+        mock_gh = MagicMock()
+        mock_gh.create_pr.return_value = {"number": 102, "html_url": "url"}
+        MockGH.return_value = mock_gh
+
+        setup["project"].container_uid = "2000:2000"
+
+        task = _make_task()
+        task_file, task = _save_and_pick(setup["config"], task)
+
+        setup["worker"]._process_task(task_file, task)
+
+        call_kwargs = setup["docker_runner"].chown_volume.call_args.kwargs
+        assert call_kwargs["uid"] == "2000:2000"
+
+    @_patch_github
+    def test_chown_volume_and_cache_called_before_prepare_workdir(self, MockGH, setup):
+        """Verify chown_volume and chown_cache_subdir are both called before prepare_workdir."""
+        mock_gh = MagicMock()
+        mock_gh.create_pr.return_value = {"number": 103, "html_url": "url"}
+        MockGH.return_value = mock_gh
+
+        call_order = []
+        setup["docker_runner"].chown_volume.side_effect = lambda **kw: (
+            call_order.append("chown_workspace")
+            or ContainerResult(exit_code=0, logs="")
+        )
+        setup["docker_runner"].chown_cache_subdir.side_effect = lambda **kw: (
+            call_order.append("chown_cache") or ContainerResult(exit_code=0, logs="")
+        )
+        setup["repo_cache"].prepare_workdir.side_effect = lambda *a, **kw: (
+            call_order.append("prepare_workdir") or "wowkmang/abc12345"
+        )
+
+        task = _make_task()
+        task_file, task = _save_and_pick(setup["config"], task)
+        setup["worker"]._process_task(task_file, task)
+
+        assert call_order.index("chown_workspace") < call_order.index("prepare_workdir")
+        assert call_order.index("chown_cache") < call_order.index("prepare_workdir")
+        # Workspace chown must come before cache chown
+        assert call_order.index("chown_workspace") < call_order.index("chown_cache")
+        call_kwargs = setup["docker_runner"].chown_cache_subdir.call_args.kwargs
+        assert call_kwargs["cache_subdir"] == "github.com_user_project"
+        assert call_kwargs["uid"] == "1000:1000"

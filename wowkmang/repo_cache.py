@@ -29,16 +29,17 @@ class RepoCache:
             f"  mkdir -p /cache\n"
             f"  git clone --bare {authed_url} /cache/{cache_subdir}\n"
             f"fi\n"
-            f"git clone --reference /cache/{cache_subdir} {authed_url} /workspace/repo\n"
+            f"cp -r /cache/{cache_subdir} /workspace/.repo-cache\n"
+            f"git clone --reference /workspace/.repo-cache {authed_url} /workspace/repo\n"
             f"cd /workspace/repo\n"
             f"git checkout -b {branch_name} origin/{ref}\n"
         )
 
         environment = {"GIT_TERMINAL_PROMPT": "0"}
-        result = self.docker_runner.run_git(
-            command=script,
+        result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["sh", "-c", script],
             image=image,
-            work_volume=work_volume,
             environment=environment,
             timeout_seconds=300,
         )

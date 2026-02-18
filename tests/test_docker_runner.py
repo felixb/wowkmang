@@ -54,6 +54,9 @@ class TestRunClaudeCode:
         assert kwargs["mem_limit"] == "4g"
         assert kwargs["environment"]["CLAUDE_MODEL"] == "sonnet"
         assert kwargs["environment"]["GITHUB_TOKEN"] == "ghp_secret"
+        assert kwargs["environment"]["HOME"] == "/workspace/.home"
+        assert kwargs["entrypoint"] == ""
+        assert kwargs["user"] == "1000:1000"
         assert "work-vol-123" in kwargs["volumes"]
 
     def test_returns_container_result(self):
@@ -106,7 +109,9 @@ class TestRunClaudeCode:
         assert isinstance(command, list)
         assert command[0] == "sh"
         assert command[1] == "-c"
-        assert "mkdir -p /root/.claude" in command[2]
+        assert "mkdir -p /workspace/.home/.claude" in command[2]
+        assert "cp -a /workspace/.claude-config/." in command[2]
+        assert "|| true" in command[2]
         assert command[3] == "--"
         assert command[4] == "claude"
         assert "--model" in command
@@ -365,48 +370,8 @@ class TestRemoveVolume:
         runner.remove_volume("nonexistent")
 
 
-class TestRunGit:
-    def test_runs_command_in_container(self):
-        container = _mock_container(exit_code=0, logs=b"git output")
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache")
-
-        result = runner.run_git(
-            command="git status",
-            image="ghcr.io/org/image:latest",
-            work_volume="work-vol-123",
-            environment={"GIT_TERMINAL_PROMPT": "0"},
-        )
-
-        assert result.exit_code == 0
-        assert result.logs == "git output"
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["command"] == [
-            "sh",
-            "-c",
-            "git config --global --add safe.directory '*' && git status",
-        ]
-        assert kwargs["volumes"]["work-vol-123"]["bind"] == "/workspace"
-        assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
-        assert kwargs["environment"]["GIT_TERMINAL_PROMPT"] == "0"
-
-    def test_default_environment(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
-
-        runner.run_git(
-            command="git status",
-            image="img",
-            work_volume="vol",
-        )
-
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["environment"] == {}
-
-
 class TestSeedVolume:
-    def test_copies_files_into_volume(self):
+    def test_copies_files_into_volume_subpath(self):
         container = _mock_container(exit_code=0, logs=b"")
         docker_client = _mock_docker_client(container)
         runner = DockerRunner(docker_client, cache_volume="test-cache")
@@ -414,17 +379,22 @@ class TestSeedVolume:
         result = runner.seed_volume(
             image="img:latest",
             source_host_path="/home/user/.claude",
-            target_volume="session-vol",
-            target_path="/target",
+            target_volume="work-vol",
+            target_path="/workspace/.claude-config",
         )
 
         assert result.exit_code == 0
         kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["command"] == ["cp", "-a", "/source/.", "/target/"]
+        # Volume is mounted at /workspace (not at target_path)
         assert kwargs["volumes"]["/home/user/.claude"]["bind"] == "/source"
         assert kwargs["volumes"]["/home/user/.claude"]["mode"] == "ro"
-        assert kwargs["volumes"]["session-vol"]["bind"] == "/target"
-        assert kwargs["volumes"]["session-vol"]["mode"] == "rw"
+        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
+        assert kwargs["volumes"]["work-vol"]["mode"] == "rw"
+        # cp goes to the correct subpath within the volume
+        script = kwargs["command"][2]
+        assert "/workspace/.claude-config" in script
+        assert "cp -a /source/." in script
+        assert "user" not in kwargs
 
 
 class TestEnsureImage:
@@ -584,6 +554,8 @@ class TestCopyToWorkdir:
         assert kwargs["volumes"]["work-vol"]["mode"] == "rw"
         assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
         assert kwargs["volumes"]["my-cache"]["mode"] == "ro"
+        assert kwargs["user"] == "1000:1000"
+        assert kwargs["environment"]["HOME"] == "/workspace/.home"
 
     def test_command_contains_cache_subdir(self):
         container = _mock_container()
@@ -601,3 +573,108 @@ class TestCopyToWorkdir:
         assert command[1] == "-c"
         assert "github.com_org_repo" in command[2]
         assert "/workspace/.cache/" in command[2]
+
+
+class TestRunCommand:
+    def test_passes_user_to_container(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, cache_volume="test-cache")
+
+        runner.run_command(
+            work_dir="work-vol",
+            command=["echo", "hi"],
+            image="img",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["user"] == "1000:1000"
+        assert kwargs["environment"]["HOME"] == "/workspace/.home"
+
+    def test_custom_default_uid(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(
+            docker_client, cache_volume="test-cache", default_uid="2000:2000"
+        )
+
+        runner.run_command(
+            work_dir="work-vol",
+            command=["echo", "hi"],
+            image="img",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["user"] == "2000:2000"
+
+
+class TestChownVolume:
+    def test_chowns_workspace(self):
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, cache_volume="test-cache")
+
+        result = runner.chown_volume(
+            image="img:latest",
+            work_volume="work-vol",
+            uid="1000:1000",
+        )
+
+        assert result.exit_code == 0
+        kwargs = docker_client.containers.run.call_args.kwargs
+        script = kwargs["command"][2]
+        assert "mkdir -p /workspace/.home" in script
+        assert "chown -R 1000:1000 /workspace" in script
+        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
+        assert "user" not in kwargs  # runs as root
+
+    def test_custom_uid(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, cache_volume="test-cache")
+
+        runner.chown_volume(
+            image="img",
+            work_volume="vol",
+            uid="2000:2000",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        script = kwargs["command"][2]
+        assert "chown -R 2000:2000 /workspace" in script
+
+
+class TestChownCacheSubdir:
+    def test_creates_and_chowns_subdir(self):
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, cache_volume="my-cache")
+
+        result = runner.chown_cache_subdir(
+            image="img:latest",
+            cache_subdir="github.com_user_repo",
+            uid="1000:1000",
+        )
+
+        assert result.exit_code == 0
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
+        assert "user" not in kwargs  # runs as root
+        script = kwargs["command"][2]
+        # Creates the subdir and chowns it (does not touch /cache root)
+        assert "mkdir -p /cache/github.com_user_repo" in script
+        assert "chown -R 1000:1000 /cache/github.com_user_repo" in script
+        assert "chown 1000:1000 /cache" not in script
+
+    def test_creates_subdir_when_missing(self):
+        """mkdir -p ensures the subdir is created even on a fresh cache volume."""
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, cache_volume="my-cache")
+
+        runner.chown_cache_subdir(
+            image="img", cache_subdir="nonexistent", uid="1000:1000"
+        )
+
+        script = docker_client.containers.run.call_args.kwargs["command"][2]
+        assert "mkdir -p /cache/nonexistent" in script

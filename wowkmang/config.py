@@ -19,6 +19,9 @@ class GlobalConfig(BaseSettings):
     api_tokens: str = ""
     pull_token: str = ""
     keep_workdir: bool = False
+    container_uid: str = "1000:1000"
+    git_name: str = "wowkmang"
+    git_email: str = "wowkmang@noreply"
 
 
 class GitHubLabels(BaseModel):
@@ -44,6 +47,7 @@ class ProjectConfig(BaseModel):
     post_task_policy: str = "fix_or_warn"
     github_labels: GitHubLabels = Field(default_factory=GitHubLabels)
     webhook_secret: str = ""
+    container_uid: str = ""
 
 
 def load_projects(projects_dir: Path) -> dict[str, ProjectConfig]:

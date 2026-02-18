@@ -5,7 +5,7 @@ from wowkmang.models import (
     TaskSourceInfo,
     TaskStatus,
 )
-from wowkmang.queue import (
+from wowkmang.task_queue import (
     complete_task,
     ensure_queue_dirs,
     fail_task,

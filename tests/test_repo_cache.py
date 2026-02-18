@@ -6,7 +6,7 @@ from wowkmang.repo_cache import RepoCache
 
 def _mock_docker_runner(exit_code: int = 0, logs: str = ""):
     runner = MagicMock()
-    runner.run_git.return_value = ContainerResult(exit_code=exit_code, logs=logs)
+    runner.run_command.return_value = ContainerResult(exit_code=exit_code, logs=logs)
     return runner
 
 
@@ -47,7 +47,7 @@ class TestAuthedUrl:
 
 
 class TestPrepareWorkdir:
-    def test_calls_run_git_with_correct_script(self):
+    def test_calls_run_command_with_correct_script(self):
         docker_runner = _mock_docker_runner()
         cache = RepoCache(docker_runner)
 
@@ -62,13 +62,16 @@ class TestPrepareWorkdir:
         assert branch.startswith("wowkmang/")
         assert len(branch) == len("wowkmang/") + 8
 
-        docker_runner.run_git.assert_called_once()
-        call_kwargs = docker_runner.run_git.call_args.kwargs
+        docker_runner.run_command.assert_called_once()
+        call_kwargs = docker_runner.run_command.call_args.kwargs
         assert call_kwargs["image"] == "ghcr.io/org/image:latest"
-        assert call_kwargs["work_volume"] == "work-vol-123"
+        assert call_kwargs["work_dir"] == "work-vol-123"
         assert call_kwargs["environment"] == {"GIT_TERMINAL_PROMPT": "0"}
 
-        script = call_kwargs["command"]
+        command = call_kwargs["command"]
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        script = command[2]
         assert "github.com_user_project" in script
         assert "x-access-token:ghp_tok@github.com" in script
         assert f"git checkout -b {branch}" in script
@@ -84,7 +87,7 @@ class TestPrepareWorkdir:
             "img",
         )
 
-        script = docker_runner.run_git.call_args.kwargs["command"]
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
         assert "x-access-token" not in script
         assert "https://github.com/user/project" in script
 
@@ -114,7 +117,7 @@ class TestPrepareWorkdir:
             "img",
         )
 
-        script = docker_runner.run_git.call_args.kwargs["command"]
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
         assert "if [ -d /cache/" in script
         assert "git clone --bare" in script
         assert "git clone --reference" in script

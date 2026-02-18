@@ -23,9 +23,9 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 # Add GitHub SSH host keys
 RUN ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts
 
-# Create dev user
-RUN useradd -m -s /bin/bash dev
+# Create wowkmang user
+RUN useradd -m -s /bin/bash wowkmang
 
 RUN mkdir -p /workspace/repo
 WORKDIR /workspace/repo
-RUN chown -R dev:dev /workspace
+RUN chown -R wowkmang:wowkmang /workspace

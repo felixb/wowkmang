@@ -10,6 +10,7 @@ from wowkmang.summary import (
     PRMetadata,
     SummaryGenerator,
     _extract_yaml,
+    _fallback_metadata,
     _parse_response,
 )
 
@@ -61,7 +62,6 @@ class TestGenerate:
             "diff content here",
             project=project,
             work_dir="/work",
-            session_dir="/session",
         )
 
         assert isinstance(result, PRMetadata)
@@ -74,7 +74,6 @@ class TestGenerate:
         assert call_kwargs["model"] == "haiku"
         assert call_kwargs["continue_session"] is True
         assert call_kwargs["output_format"] == "json"
-        assert call_kwargs["session_dir"] == "/session"
 
     def test_diff_truncation(self):
         docker_runner = _mock_docker_runner(VALID_YAML)
@@ -87,7 +86,6 @@ class TestGenerate:
             long_diff,
             project=_make_project(),
             work_dir="/w",
-            session_dir="/s",
         )
 
         prompt = docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
@@ -105,7 +103,6 @@ class TestGenerate:
             hook_output="FAILED test_login.py::test_bad",
             project=_make_project(),
             work_dir="/w",
-            session_dir="/s",
         )
 
         prompt = docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
@@ -122,7 +119,6 @@ class TestGenerate:
             "diff",
             project=_make_project(),
             work_dir="/w",
-            session_dir="/s",
         )
 
         prompt = docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
@@ -138,7 +134,6 @@ class TestGenerate:
             "diff",
             project=_make_project(),
             work_dir="/w",
-            session_dir="/s",
         )
 
         prompt = docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
@@ -156,25 +151,39 @@ class TestGenerate:
             "diff",
             project=_make_project(),
             work_dir="/w",
-            session_dir="/s",
         )
 
         prompt = docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
         assert "PR: #99" in prompt
 
-    def test_missing_fields_raises(self):
+    def test_falls_back_to_defaults_on_parse_error(self):
+        """When Claude returns unparseable output, a fallback PRMetadata is returned."""
         docker_runner = _mock_docker_runner("title: only title\n")
         gen = SummaryGenerator(docker_runner)
         task = _make_task()
 
-        with pytest.raises(ValueError, match="missing required fields"):
-            gen.generate(
-                task,
-                "diff",
-                project=_make_project(),
-                work_dir="/w",
-                session_dir="/s",
-            )
+        result = gen.generate(
+            task,
+            "diff",
+            project=_make_project(),
+            work_dir="/w",
+        )
+
+        assert isinstance(result, PRMetadata)
+        assert result.title == task.task[:72]
+        assert result.branch.startswith("wowkmang/")
+
+    def test_falls_back_on_claude_failure(self):
+        """When Claude itself fails, a fallback PRMetadata is returned."""
+        runner = MagicMock()
+        runner.run_claude_code.side_effect = RuntimeError("usage limit")
+        gen = SummaryGenerator(runner)
+        task = _make_task()
+
+        result = gen.generate(task, "diff", project=_make_project(), work_dir="/w")
+
+        assert isinstance(result, PRMetadata)
+        assert result.branch.startswith("wowkmang/")
 
 
 class TestParseResponse:
@@ -205,3 +214,27 @@ class TestExtractYaml:
     def test_falls_back_to_full_text(self):
         text = "title: test\nbranch: foo"
         assert _extract_yaml(text) == "title: test\nbranch: foo"
+
+
+class TestFallbackMetadata:
+    def test_title_truncated_to_72_chars(self):
+        task = _make_task(task="A" * 100)
+        result = _fallback_metadata(task)
+        assert result.title == "A" * 72
+
+    def test_branch_has_wowkmang_prefix(self):
+        task = _make_task(task="Fix the login bug")
+        result = _fallback_metadata(task)
+        assert result.branch.startswith("wowkmang/")
+
+    def test_branch_is_kebab_case(self):
+        task = _make_task(task="Fix the login bug")
+        result = _fallback_metadata(task)
+        branch = result.branch.removeprefix("wowkmang/")
+        assert branch == branch.lower()
+        assert " " not in branch
+
+    def test_description_contains_task(self):
+        task = _make_task(task="Fix the login bug")
+        result = _fallback_metadata(task)
+        assert "Fix the login bug" in result.description

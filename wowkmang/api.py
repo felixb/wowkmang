@@ -17,7 +17,7 @@ from wowkmang.config import (
 from wowkmang.docker_runner import DockerRunner
 from wowkmang.hooks import FixLoop, HookRunner
 from wowkmang.models import Task, TaskSource, TaskSourceInfo
-from wowkmang.queue import ensure_queue_dirs, get_task, list_tasks, save_task
+from wowkmang.task_queue import ensure_queue_dirs, get_task, list_tasks, save_task
 from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
 from wowkmang.worker import Worker
@@ -40,7 +40,10 @@ async def lifespan(app: FastAPI):
     # Initialize worker components
     docker_client = docker.from_env()
     docker_runner = DockerRunner(
-        docker_client, cache_volume=config.cache_volume, pull_token=config.pull_token
+        docker_client,
+        cache_volume=config.cache_volume,
+        pull_token=config.pull_token,
+        default_uid=config.container_uid,
     )
     repo_cache = RepoCache(docker_runner=docker_runner)
     hook_runner = HookRunner(docker_runner)

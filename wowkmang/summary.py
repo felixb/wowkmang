@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 
 import yaml
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from wowkmang.config import ProjectConfig
 from wowkmang.docker_runner import DockerRunner
 from wowkmang.models import Task
+
+logger = logging.getLogger(__name__)
 
 MAX_DIFF_CHARS = 10000
 
@@ -28,29 +31,29 @@ class SummaryGenerator:
         hook_output: str | None = None,
         project: ProjectConfig | None = None,
         work_dir: str | None = None,
-        session_dir: str | None = None,
     ) -> PRMetadata:
         """Generate PR metadata by continuing the Claude Code session with haiku."""
         prompt = self._build_prompt(task, diff, hook_output)
 
-        result = self.docker_runner.run_claude_code(
-            work_dir=work_dir or "/workspace",
-            task_prompt=prompt,
-            model="haiku",
-            project=project or ProjectConfig(name="_summary", repo=""),
-            timeout_minutes=5,
-            session_dir=session_dir,
-            continue_session=True,
-            output_format="json",
-        )
-
-        metadata = _parse_response(result.logs)
-
-        return PRMetadata(
-            title=metadata["title"],
-            branch=f"wowkmang/{metadata['branch']}",
-            description=metadata["description"],
-        )
+        try:
+            result = self.docker_runner.run_claude_code(
+                work_dir=work_dir or "/workspace",
+                task_prompt=prompt,
+                model="haiku",
+                project=project or ProjectConfig(name="_summary", repo=""),
+                timeout_minutes=5,
+                continue_session=True,
+                output_format="json",
+            )
+            metadata = _parse_response(result.logs)
+            return PRMetadata(
+                title=metadata["title"],
+                branch=f"wowkmang/{metadata['branch']}",
+                description=metadata["description"],
+            )
+        except Exception as e:
+            logger.warning("Summary generation failed (%s), using fallback metadata", e)
+            return _fallback_metadata(task)
 
     @staticmethod
     def _build_prompt(task: Task, diff: str, hook_output: str | None) -> str:
@@ -88,6 +91,18 @@ class SummaryGenerator:
         )
 
         return "\n".join(parts)
+
+
+def _fallback_metadata(task) -> PRMetadata:
+    """Generate minimal PR metadata without calling Claude."""
+    title = task.task[:72].strip()
+    branch = re.sub(r"[^a-z0-9-]", "-", title.lower())[:50].strip("-")
+    branch = re.sub(r"-+", "-", branch)
+    return PRMetadata(
+        title=title,
+        branch=f"wowkmang/{branch}",
+        description=f"Automated changes for: {task.task}",
+    )
 
 
 def _parse_response(logs: str) -> dict:

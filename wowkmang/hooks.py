@@ -31,18 +31,6 @@ class HookRunner:
         self._has_pre_commit_config[work_dir] = has_config
         return has_config
 
-    def get_effective_pre_hooks(
-        self, work_dir: str, project: ProjectConfig
-    ) -> list[str]:
-        commands = project.pre_task
-        if not commands and not self._check_pre_commit_config(work_dir, project):
-            return []
-        effective = list(commands)
-        if self._check_pre_commit_config(work_dir, project):
-            if not any("pre-commit install" in cmd for cmd in effective):
-                effective.append("pre-commit install")
-        return effective
-
     def get_effective_post_hooks(
         self, work_dir: str, project: ProjectConfig
     ) -> list[str]:

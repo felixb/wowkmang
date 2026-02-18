@@ -9,7 +9,7 @@ from tests.conftest import SAMPLE_PROJECT, TEST_API_TOKEN, TEST_API_TOKEN_HASH
 from wowkmang.api import app, config, projects, authenticator
 import wowkmang.api as api_module
 from wowkmang.config import load_projects, GlobalConfig
-from wowkmang.queue import ensure_queue_dirs
+from wowkmang.task_queue import ensure_queue_dirs
 
 
 @pytest.fixture(autouse=True)

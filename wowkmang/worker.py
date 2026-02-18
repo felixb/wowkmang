@@ -10,7 +10,7 @@ from wowkmang.docker_runner import ContainerResult, DockerRunner
 from wowkmang.github_client import GitHubClient
 from wowkmang.hooks import FixLoop, HookRunner
 from wowkmang.models import Task, TaskResult, TaskStatus, task_from_yaml, task_to_yaml
-from wowkmang.queue import complete_task, fail_task, pick_next_task
+from wowkmang.task_queue import complete_task, fail_task, pick_next_task
 from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
 
@@ -74,13 +74,14 @@ class Worker:
                         error=f"Internal error: {e}",
                         finished=datetime.now(timezone.utc),
                     )
-                    fail_task(self.config.tasks_dir, task_file, task)
+                    self._fail_task(task_file, task)
                 finally:
                     self._status = WorkerStatus.IDLE
             else:
                 time.sleep(5)
 
     def _process_task(self, task_file, task: Task) -> None:
+        logger.info("Starting task %s [%s]: %s", task.id, task.project, task.task[:80])
         project = self.projects.get(task.project)
         if not project:
             task.result = TaskResult(
@@ -88,7 +89,7 @@ class Worker:
                 error=f"Unknown project: {task.project}",
                 finished=datetime.now(timezone.utc),
             )
-            fail_task(self.config.tasks_dir, task_file, task)
+            self._fail_task(task_file, task)
             return
 
         start_time = datetime.now(timezone.utc)
@@ -106,7 +107,7 @@ class Worker:
                 error=f"Internal error: {e}",
                 finished=datetime.now(timezone.utc),
             )
-            fail_task(self.config.tasks_dir, task_file, task)
+            self._fail_task(task_file, task)
         finally:
             if self.config.keep_workdir:
                 logger.info("Keeping work volume for inspection: %s", work_volume)
@@ -127,6 +128,26 @@ class Worker:
         # Pull image once for the entire task
         self.docker_runner.ensure_image(image, project)
 
+        # Resolve effective container uid and cache subdir up front
+        effective_uid = project.container_uid or self.config.container_uid
+        cache_subdir = RepoCache.cache_subdir(task.repo)
+
+        # Chown workspace first: the image user (e.g. wowkmang at uid 1001 in node:20)
+        # may differ from effective_uid (1000:1000). This also fixes root-owned files
+        # seeded before this point (e.g. .claude-config).
+        self.docker_runner.chown_volume(
+            image=image,
+            work_volume=work_volume,
+            uid=effective_uid,
+        )
+
+        # Fix ownership of any pre-existing cache so non-root git can access it
+        self.docker_runner.chown_cache_subdir(
+            image=image,
+            cache_subdir=cache_subdir,
+            uid=effective_uid,
+        )
+
         # Create .wowkmang dir for step logs
         self._create_wowkmang_dir(work_volume, image)
 
@@ -135,8 +156,7 @@ class Worker:
             task.repo, task.ref, work_volume, image, github_token
         )
 
-        # Copy debug artifacts into workdir
-        cache_subdir = RepoCache.cache_subdir(task.repo)
+        # Copy debug artifacts into workdir (runs as non-root, workspace already owned correctly)
         copy_result = self.docker_runner.copy_to_workdir(
             work_volume=work_volume,
             cache_subdir=cache_subdir,
@@ -144,11 +164,14 @@ class Worker:
         )
         self._log_step("copy_to_workdir", copy_result, work_volume, image)
 
+        # Configure git identity in the cloned repo
+        self._configure_git(work_volume, image)
+
         # Pre-task hooks
-        if effective_pre := self.hook_runner.get_effective_pre_hooks(
-            work_volume, project
-        ):
-            pre_result = self.hook_runner.run_hooks(effective_pre, work_volume, project)
+        if project.pre_task:
+            pre_result = self.hook_runner.run_hooks(
+                project.pre_task, work_volume, project
+            )
             if not pre_result.success:
                 duration = int(
                     (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -159,11 +182,12 @@ class Worker:
                     duration_seconds=duration,
                     finished=datetime.now(timezone.utc),
                 )
-                fail_task(self.config.tasks_dir, task_file, task)
+                self._fail_task(task_file, task)
                 return
 
         # Claude Code execution
         model = task.model or project.default_model
+
         cc_result = self.docker_runner.run_claude_code(
             work_dir=work_volume,
             task_prompt=task.task,
@@ -171,6 +195,7 @@ class Worker:
             project=project,
             timeout_minutes=project.timeout_minutes,
         )
+
         self._log_step("claude_code", cc_result, work_volume, image)
         if cc_result.exit_code != 0:
             duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
@@ -180,13 +205,10 @@ class Worker:
                 duration_seconds=duration,
                 finished=datetime.now(timezone.utc),
             )
-            fail_task(self.config.tasks_dir, task_file, task)
+            self._fail_task(task_file, task)
             return
 
-        commit_result = self._commit_changes(work_volume, image)
-        self._log_step("commit", commit_result, work_volume, image)
-
-        # Post-task hooks
+        # Post-task hooks (run before commit so we commit the fully-fixed state)
         draft = False
         hook_output = None
         post_passed = True
@@ -213,7 +235,7 @@ class Worker:
                         finished=datetime.now(timezone.utc),
                         post_task_passed=False,
                     )
-                    fail_task(self.config.tasks_dir, task_file, task)
+                    self._fail_task(task_file, task)
                     return
 
                 if policy in ("fix_or_fail", "fix_or_warn"):
@@ -236,7 +258,7 @@ class Worker:
                             post_task_passed=False,
                             fix_attempts=fix_attempts,
                         )
-                        fail_task(self.config.tasks_dir, task_file, task)
+                        self._fail_task(task_file, task)
                         return
                     else:
                         # fix_or_warn: proceed with draft PR
@@ -247,8 +269,8 @@ class Worker:
                     draft = True
                     hook_output = post_result.output
 
-        # Check if there are actual changes before pushing
-        if not self._has_changes(work_volume, task.ref, image):
+        # Check if there are actual changes before committing
+        if not self._has_any_changes(work_volume, task.ref, image):
             duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
             task.result = TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -257,13 +279,13 @@ class Worker:
                 finished=datetime.now(timezone.utc),
                 post_task_passed=post_passed,
             )
-            complete_task(self.config.tasks_dir, task_file, task)
+            self._complete_task(task_file, task)
             return
 
-        # Get diff
-        diff = self._get_diff(work_volume, image)
+        # Get diff before committing so we can generate a proper commit message
+        diff = self._get_diff_before_commit(work_volume, task.ref, image)
 
-        # Generate PR metadata
+        # Generate PR metadata (provides commit message and PR title)
         pr_meta = self.summary_generator.generate(
             task,
             diff,
@@ -271,6 +293,7 @@ class Worker:
             project=project,
             work_dir=work_volume,
         )
+
         self._log_step(
             "summary",
             ContainerResult(
@@ -280,14 +303,20 @@ class Worker:
             image,
         )
 
+        # Commit with the generated PR title as the commit message
+        commit_result = self._commit_changes(
+            work_volume, image, commit_message=pr_meta.title
+        )
+        self._log_step("commit", commit_result, work_volume, image)
+
         # Rename branch
         self._rename_branch(work_volume, branch, pr_meta.branch, image)
 
         # Push via container
-        push_result = self.docker_runner.run_git(
-            command=f"git push origin {pr_meta.branch}",
+        push_result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["git", "push", "origin", pr_meta.branch],
             image=image,
-            work_volume=work_volume,
             environment={"GIT_TERMINAL_PROMPT": "0"},
         )
         self._log_step("push", push_result, work_volume, image)
@@ -343,14 +372,14 @@ class Worker:
             post_task_passed=post_passed,
             fix_attempts=fix_attempts if fix_attempts > 0 else None,
         )
-        complete_task(self.config.tasks_dir, task_file, task)
+        self._complete_task(task_file, task)
 
     def _create_wowkmang_dir(self, work_volume: str, image: str) -> None:
         """Create .wowkmang directory in the workdir for step logs."""
-        self.docker_runner.run_git(
-            command="mkdir -p /workspace/.wowkmang",
+        self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["mkdir", "-p", "/workspace/.wowkmang"],
             image=image,
-            work_volume=work_volume,
         )
 
     def _log_step(
@@ -367,18 +396,22 @@ class Worker:
         log_entry = (
             f"=== {step_name} (exit_code={result.exit_code}) ===\n" f"{result.logs}\n\n"
         )
-        self.docker_runner.run_git(
-            command=f"sh -c {shlex.quote(f'printf %s {shlex.quote(log_entry)} >> /workspace/.wowkmang/steps.log')}",
+        self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=[
+                "sh",
+                "-c",
+                f"printf %s {shlex.quote(log_entry)} >> /workspace/.wowkmang/steps.log",
+            ],
             image=image,
-            work_volume=work_volume,
         )
 
     def _has_changes(self, work_volume: str, ref: str, image: str) -> bool:
         """Check if branch has changes compared to origin/{ref}. Returns True if changes exist."""
-        result = self.docker_runner.run_git(
-            command=f"git diff origin/{ref}..HEAD --quiet",
+        result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["git", "diff", f"origin/{ref}..HEAD", "--quiet"],
             image=image,
-            work_volume=work_volume,
         )
         # exit code 0 = no diff, 1 = has changes
         return result.exit_code != 0
@@ -436,19 +469,34 @@ class Worker:
         )
         logger.debug("Seeded work volume with claude config from %s", source)
 
-    def _commit_changes(self, work_volume: str, image: str) -> ContainerResult:
+    def _configure_git(self, work_volume: str, image: str) -> None:
+        """Configure git user identity in the cloned repo."""
+        script = (
+            f"git config user.name {shlex.quote(self.config.git_name)} && "
+            f"git config user.email {shlex.quote(self.config.git_email)}"
+        )
+        self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["sh", "-c", script],
+            image=image,
+        )
+
+    def _commit_changes(
+        self,
+        work_volume: str,
+        image: str,
+        commit_message: str = "Apply Claude Code changes",
+    ) -> ContainerResult:
         """Stage and commit any files Claude left uncommitted."""
         script = (
-            "git -c user.name=wowkmang -c user.email=wowkmang@noreply "
-            "add -A && "
-            "git -c user.name=wowkmang -c user.email=wowkmang@noreply "
-            "commit -m 'Apply Claude Code changes' || "
+            f"git add -A && "
+            f"git commit -m {shlex.quote(commit_message)} || "
             "test \"$(git status --porcelain)\" = ''"
         )
-        result = self.docker_runner.run_git(
-            command=script,
+        result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["sh", "-c", script],
             image=image,
-            work_volume=work_volume,
         )
         if result.exit_code != 0:
             raise RuntimeError(
@@ -456,12 +504,32 @@ class Worker:
             )
         return result
 
-    def _get_diff(self, work_volume: str, image: str) -> str:
-        """Get diff of changes via container."""
-        result = self.docker_runner.run_git(
-            command="git diff HEAD~1..HEAD || git diff --cached",
+    def _has_any_changes(self, work_volume: str, ref: str, image: str) -> bool:
+        """Check for committed changes beyond origin/{ref} or any uncommitted changes."""
+        committed = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["git", "diff", f"origin/{ref}..HEAD", "--quiet"],
             image=image,
-            work_volume=work_volume,
+        )
+        if committed.exit_code != 0:
+            return True
+        uncommitted = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["sh", "-c", '[ -z "$(git status --porcelain)" ]'],
+            image=image,
+        )
+        return uncommitted.exit_code != 0
+
+    def _get_diff_before_commit(self, work_volume: str, ref: str, image: str) -> str:
+        """Get the full diff of all changes (committed and uncommitted) vs origin/{ref}."""
+        result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=[
+                "sh",
+                "-c",
+                f"git diff origin/{ref}..HEAD; git diff HEAD",
+            ],
+            image=image,
         )
         return result.logs
 
@@ -469,15 +537,35 @@ class Worker:
         self, work_volume: str, old_branch: str, new_branch: str, image: str
     ) -> None:
         """Rename branch via container."""
-        result = self.docker_runner.run_git(
-            command=f"git branch -m {old_branch} {new_branch}",
+        result = self.docker_runner.run_command(
+            work_dir=work_volume,
+            command=["git", "branch", "-m", old_branch, new_branch],
             image=image,
-            work_volume=work_volume,
         )
         if result.exit_code != 0:
             raise RuntimeError(
                 f"Branch rename failed (exit {result.exit_code}):\n{result.logs}"
             )
+
+    def _fail_task(self, task_file, task: Task) -> None:
+        logger.info(
+            "Task %s [%s] failed: %s",
+            task.id,
+            task.project,
+            (task.result.error or "")[:120] if task.result else "unknown",
+        )
+        fail_task(self.config.tasks_dir, task_file, task)
+
+    def _complete_task(self, task_file, task: Task) -> None:
+        result = task.result
+        logger.info(
+            "Task %s [%s] completed: pr=%s status=%s",
+            task.id,
+            task.project,
+            result.pr_url if result else None,
+            result.status if result else None,
+        )
+        complete_task(self.config.tasks_dir, task_file, task)
 
     @staticmethod
     def _extract_repo(repo_url: str) -> str:
