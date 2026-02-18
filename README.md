@@ -72,8 +72,7 @@ name: myproject
 repo: https://github.com/user/project
 ref: main
 
-credentials:
-  github_token: ghp_xxxxxxxxxxxxxxxxxxxx
+github_token: ghp_xxxxxxxxxxxxxxxxxxxx
 
 default_model: claude-sonnet-4-5-20250929
 extra_instructions: |

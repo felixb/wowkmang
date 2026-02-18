@@ -24,7 +24,9 @@ class HookRunner:
             work_dir=work_dir,
             command="test -f .pre-commit-config.yaml",
             image=project.docker_image,
-            environment=project.credentials,
+            environment={
+                "GITHUB_TOKEN": project.github_token or self.docker_runner.github_token
+            },
             timeout_seconds=5,
         )
         has_config = result.exit_code == 0

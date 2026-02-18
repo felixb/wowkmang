@@ -23,12 +23,14 @@ class RepoCache:
 
         script = (
             f"set -e\n"
-            f"if [ -d /cache/{cache_subdir} ]; then\n"
+            f"if [ -d /cache/{cache_subdir}/.git ]; then\n"
             f"  git -C /cache/{cache_subdir} fetch --all\n"
             f"else\n"
+            f"  rm -rf /cache/{cache_subdir}\n"
             f"  mkdir -p /cache\n"
             f"  git clone --bare {authed_url} /cache/{cache_subdir}\n"
             f"fi\n"
+            f"rm -rf /workspace/.repo-cache\n"
             f"cp -r /cache/{cache_subdir} /workspace/.repo-cache\n"
             f"git clone --reference /workspace/.repo-cache {authed_url} /workspace/repo\n"
             f"cd /workspace/repo\n"

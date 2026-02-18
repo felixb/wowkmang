@@ -17,7 +17,7 @@ def _make_project(**overrides) -> ProjectConfig:
     defaults = {
         "name": "testproj",
         "repo": "https://github.com/user/project",
-        "credentials": {"github_token": "ghp_test"},
+        "github_token": "ghp_test",
         "pre_task": [],
         "post_task": ["pytest"],
         "post_task_policy": "warn",
@@ -577,6 +577,7 @@ class TestConfigureGit:
     def test_runs_git_config_in_workdir(self, tmp_path):
         config = _make_config(tmp_path)
         ensure_queue_dirs(config.tasks_dir)
+        project = ProjectConfig(name="test", repo="https://github.com/a/b")
 
         docker_runner = MagicMock()
         docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
@@ -591,7 +592,7 @@ class TestConfigureGit:
             summary_generator=MagicMock(),
         )
 
-        worker._configure_git("work-vol", "img:latest")
+        worker._configure_git("work-vol", "img:latest", project)
 
         docker_runner.run_command.assert_called_once()
         call_kwargs = docker_runner.run_command.call_args.kwargs
@@ -607,6 +608,7 @@ class TestConfigureGit:
         config.git_name = "mybot"
         config.git_email = "mybot@example.com"
         ensure_queue_dirs(config.tasks_dir)
+        project = ProjectConfig(name="test", repo="https://github.com/a/b")
 
         docker_runner = MagicMock()
         docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
@@ -621,11 +623,42 @@ class TestConfigureGit:
             summary_generator=MagicMock(),
         )
 
-        worker._configure_git("vol", "img")
+        worker._configure_git("vol", "img", project)
 
         script = docker_runner.run_command.call_args.kwargs["command"][2]
         assert "mybot" in script
         assert "mybot@example.com" in script
+
+    def test_uses_project_values(self, tmp_path):
+        config = _make_config(tmp_path)
+        config.git_name = "global-bot"
+        ensure_queue_dirs(config.tasks_dir)
+        project = ProjectConfig(
+            name="test",
+            repo="https://github.com/a/b",
+            git_name="proj-bot",
+            git_email="proj@example.com",
+        )
+
+        docker_runner = MagicMock()
+        docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
+
+        worker = Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+        worker._configure_git("vol", "img", project)
+
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
+        assert "proj-bot" in script
+        assert "proj@example.com" in script
+        assert "global-bot" not in script
 
 
 class TestExtractRepo:

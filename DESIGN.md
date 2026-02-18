@@ -119,13 +119,9 @@ name: myproject
 repo: https://github.com/user/project
 ref: main                                     # Default branch to work against
 
-# Credentials — scoped to this project only
-# These end up in the Claude Code container's environment.
-# Only provide what this project needs. Least privilege by design.
-credentials:
-  github_token: ghp_xxxxxxxxxxxxxxxxxxxx
-  # Add any project-specific env vars Claude Code might need
-  # e.g. DATABASE_URL, AWS keys for tests, etc.
+# GitHub token — scoped to this project only
+# This is passed as GITHUB_TOKEN to the Claude Code container.
+github_token: ghp_xxxxxxxxxxxxxxxxxxxx
 
 # Claude Code settings
 default_model: claude-sonnet-4-5-20250929     # Model for the main task
@@ -498,7 +494,7 @@ class DockerRunner:
 
         environment = {
             "CLAUDE_MODEL": model,
-            **project.credentials,  # Project-scoped secrets
+            "GITHUB_TOKEN": project.github_token or self.github_token,  # Project-scoped secrets
         }
 
         volumes = {
@@ -913,7 +909,7 @@ Putting it all together — the complete flow from webhook to PR:
 
 5. CLAUDE CODE EXECUTION
    → Spin up Claude Code Docker container
-   → Mount work dir, dependency caches, credentials
+   → Mount work dir, dependency caches, tokens
    → Claude Code runs against the task prompt
    → CLAUDE.md from repo + extra_instructions from project config
    → Collect exit code and logs
@@ -1027,7 +1023,7 @@ Every failure is recorded in the task YAML's `result.error` field and the task f
 
 ## Security Considerations
 
-- **Credentials scoped per project**: Each project only has access to its own tokens. Claude Code containers only receive the credentials defined in their project config.
+- **Credentials scoped per project**: Each project only has access to its own tokens. Claude Code containers only receive the `github_token` defined in their project config.
 - **Constant-time auth comparison**: Both token and HMAC checks use `hmac.compare_digest()`.
 - **Docker socket access**: Inherent to the problem. Run wowkmang on a dedicated machine treated as privileged infrastructure.
 - **File permissions**: `projects/` directory and its contents should be readable only by the wowkmang process (mode 700/600).

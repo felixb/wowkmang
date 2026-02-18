@@ -23,11 +23,13 @@ class DockerRunner:
         docker_client,
         cache_volume: str,
         pull_token: str = "",
+        github_token: str = "",
         default_uid: str = "1000:1000",
     ):
         self.client = docker_client
         self.cache_volume = cache_volume
         self.pull_token = pull_token
+        self.github_token = github_token
         self.default_uid = default_uid
         self._pulled_images: set[str] = set()
 
@@ -43,11 +45,10 @@ class DockerRunner:
         tokens: list[tuple[str, str]] = []
         if self.pull_token:
             tokens.append(("pull_token", self.pull_token))
-        project_token = project.credentials.get(
-            "GITHUB_TOKEN"
-        ) or project.credentials.get("github_token")
+
+        project_token = project.github_token or self.github_token
         if project_token and project_token != self.pull_token:
-            tokens.append(("project token", project_token))
+            tokens.append(("github_token", project_token))
 
         for label, token in tokens:
             try:
@@ -237,7 +238,7 @@ class DockerRunner:
 
         environment = {
             "CLAUDE_MODEL": model,
-            **project.credentials,
+            "GITHUB_TOKEN": project.github_token or self.github_token,
         }
 
         # Prepend bootstrap script to copy claude config from volume to $HOME/.claude
@@ -269,7 +270,7 @@ class DockerRunner:
                 work_dir=work_dir,
                 command=cmd,
                 image=project.docker_image,
-                environment=project.credentials,
+                environment={"GITHUB_TOKEN": project.github_token or self.github_token},
                 timeout_seconds=project.timeout_minutes * 60,
             )
             if last_result.exit_code != 0:
@@ -316,14 +317,15 @@ class DockerRunner:
         working_dir: str = "/workspace/repo",
         user: str | None = None,
     ) -> ContainerResult:
+        effective_environment = {"GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"} | environment
         if user:
-            environment = {**environment, "HOME": "/workspace/.home"}
+            effective_environment["HOME"] = "/workspace/.home"
 
         kwargs = dict(
             image=image,
             command=command,
             entrypoint="",
-            environment=environment,
+            environment=effective_environment,
             volumes=volumes,
             working_dir=working_dir,
             detach=True,

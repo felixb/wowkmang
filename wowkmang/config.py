@@ -18,6 +18,7 @@ class GlobalConfig(BaseSettings):
     port: int = 8484
     api_tokens: str = ""
     pull_token: str = ""
+    github_token: str = ""
     keep_workdir: bool = False
     container_uid: str = "1000:1000"
     git_name: str = "wowkmang"
@@ -36,7 +37,9 @@ class ProjectConfig(BaseModel):
     name: str
     repo: str
     ref: str = "main"
-    credentials: dict[str, str] = Field(default_factory=dict)
+    github_token: str = ""
+    git_name: str = ""
+    git_email: str = ""
     default_model: str = "sonnet"
     extra_instructions: str = ""
     docker_image: str = "ghcr.io/anthropics/claude-code:latest"

@@ -10,7 +10,7 @@ def _make_project(**overrides) -> ProjectConfig:
     defaults = {
         "name": "test",
         "repo": "https://github.com/u/p",
-        "credentials": {"GITHUB_TOKEN": "ghp_secret"},
+        "github_token": "ghp_secret",
     }
     defaults.update(overrides)
     return ProjectConfig(**defaults)
@@ -421,7 +421,7 @@ class TestEnsureImage:
         runner = DockerRunner(
             docker_client, cache_volume="test-cache", pull_token="ghp_global"
         )
-        project = _make_project(credentials={"GITHUB_TOKEN": "ghp_project"})
+        project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
 
@@ -439,7 +439,7 @@ class TestEnsureImage:
         runner = DockerRunner(
             docker_client, cache_volume="test-cache", pull_token="ghp_global"
         )
-        project = _make_project(credentials={"GITHUB_TOKEN": "ghp_project"})
+        project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
 
@@ -458,7 +458,7 @@ class TestEnsureImage:
         runner = DockerRunner(
             docker_client, cache_volume="test-cache", pull_token="ghp_same"
         )
-        project = _make_project(credentials={"GITHUB_TOKEN": "ghp_same"})
+        project = _make_project(github_token="ghp_same")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
 
@@ -481,13 +481,39 @@ class TestEnsureImage:
     def test_no_pull_token_uses_project_token(self):
         docker_client = _mock_docker_client()
         runner = DockerRunner(docker_client, cache_volume="test-cache")
-        project = _make_project(credentials={"GITHUB_TOKEN": "ghp_project"})
+        project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
 
         docker_client.images.pull.assert_called_once_with(
             "ghcr.io/org/image:latest",
             auth_config={"username": "x", "password": "ghp_project"},
+        )
+
+    def test_uses_project_github_token_field(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        project = _make_project(github_token="ghp_field")
+
+        runner.ensure_image("ghcr.io/org/image:latest", project)
+
+        docker_client.images.pull.assert_called_once_with(
+            "ghcr.io/org/image:latest",
+            auth_config={"username": "x", "password": "ghp_field"},
+        )
+
+    def test_falls_back_to_global_github_token(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(
+            docker_client, cache_volume="test-cache", github_token="ghp_global"
+        )
+        project = _make_project(github_token="")
+
+        runner.ensure_image("ghcr.io/org/image:latest", project)
+
+        docker_client.images.pull.assert_called_once_with(
+            "ghcr.io/org/image:latest",
+            auth_config={"username": "x", "password": "ghp_global"},
         )
 
     def test_all_auth_fails_does_not_raise(self):

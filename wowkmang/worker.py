@@ -122,7 +122,7 @@ class Worker:
         work_volume: str,
         start_time: datetime,
     ) -> None:
-        github_token = project.credentials.get("github_token")
+        github_token = project.github_token or self.config.github_token
         image = project.docker_image
 
         # Pull image once for the entire task
@@ -165,7 +165,7 @@ class Worker:
         self._log_step("copy_to_workdir", copy_result, work_volume, image)
 
         # Configure git identity in the cloned repo
-        self._configure_git(work_volume, image)
+        self._configure_git(work_volume, image, project)
 
         # Pre-task hooks
         if project.pre_task:
@@ -454,7 +454,7 @@ class Worker:
                 )
 
     def _seed_claude_config(self, work_volume: str, image: str) -> None:
-        """Copy host claude config into work volume so the container has auth credentials."""
+        """Copy host claude config into work volume so the container has auth tokens."""
         source = self.config.host_claude_config_dir
         if not source:
             logger.warning(
@@ -469,11 +469,15 @@ class Worker:
         )
         logger.debug("Seeded work volume with claude config from %s", source)
 
-    def _configure_git(self, work_volume: str, image: str) -> None:
+    def _configure_git(
+        self, work_volume: str, image: str, project: ProjectConfig
+    ) -> None:
         """Configure git user identity in the cloned repo."""
+        git_name = project.git_name or self.config.git_name
+        git_email = project.git_email or self.config.git_email
         script = (
-            f"git config user.name {shlex.quote(self.config.git_name)} && "
-            f"git config user.email {shlex.quote(self.config.git_email)}"
+            f"git config user.name {shlex.quote(git_name)} && "
+            f"git config user.email {shlex.quote(git_email)}"
         )
         self.docker_runner.run_command(
             work_dir=work_volume,

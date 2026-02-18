@@ -8,7 +8,7 @@ SAMPLE_PROJECT = {
     "name": "testproject",
     "repo": "https://github.com/user/testproject",
     "ref": "main",
-    "credentials": {"github_token": "ghp_test"},
+    "github_token": "ghp_test",
     "default_model": "claude-sonnet-4-5-20250929",
     "webhook_secret": "whsec_testsecret",
     "github_labels": {"trigger": "wowkmang"},
