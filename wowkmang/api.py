@@ -15,12 +15,12 @@ from wowkmang.config import (
     ProjectConfig,
 )
 from wowkmang.docker_runner import DockerRunner
-from wowkmang.hooks import FixLoop, HookRunner
+from wowkmang.hooks import HookRunner
 from wowkmang.models import Task, TaskSource, TaskSourceInfo
 from wowkmang.task_queue import ensure_queue_dirs, get_task, list_tasks, save_task
 from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
-from wowkmang.worker import Worker
+from wowkmang.worker import FixLoop, Worker
 
 logger = logging.getLogger(__name__)
 

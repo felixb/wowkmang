@@ -8,7 +8,7 @@ from enum import Enum
 from wowkmang.config import GlobalConfig, ProjectConfig
 from wowkmang.docker_runner import ContainerResult, DockerRunner
 from wowkmang.github_client import GitHubClient
-from wowkmang.hooks import FixLoop, HookRunner
+from wowkmang.hooks import HookResult, HookRunner, HookType
 from wowkmang.models import Task, TaskResult, TaskStatus, task_from_yaml, task_to_yaml
 from wowkmang.task_queue import (
     complete_task,
@@ -20,6 +20,49 @@ from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
 
 logger = logging.getLogger(__name__)
+
+
+class FixLoop:
+    def __init__(self, docker_runner: DockerRunner, hook_runner: HookRunner):
+        self.docker_runner = docker_runner
+        self.hook_runner = hook_runner
+
+    def run(
+        self,
+        task,
+        project: ProjectConfig,
+        work_dir: str,
+        project_volume: str,
+        hook_failure: HookResult,
+    ) -> HookResult:
+        """Attempt to fix post-task check failures. Returns final check result."""
+        last_result = hook_failure
+
+        for attempt in range(project.max_fix_attempts):
+            fix_prompt = (
+                "The following checks failed after your changes. "
+                f"Fix the issues:\n\n{last_result.output}"
+            )
+
+            model = task.model or project.default_model
+            self.docker_runner.run_claude_code(
+                work_dir=work_dir,
+                project_volume=project_volume,
+                task_prompt=fix_prompt,
+                model=model,
+                project=project,
+                timeout_minutes=project.timeout_minutes,
+                continue_session=True,
+            )
+
+            last_result = self.hook_runner.run_post_task_checks(
+                work_dir, project_volume, project
+            )
+
+            if last_result.success:
+                return last_result
+
+        return last_result
 
 
 class WorkerStatus(str, Enum):
@@ -172,7 +215,7 @@ class Worker:
         # Pre-task hooks
         if project.pre_task:
             pre_result = self.hook_runner.run_hooks(
-                project.pre_task, work_volume, project_volume, project
+                HookType.PRE, work_volume, project_volume, project
             )
             if not pre_result.success:
                 duration = int(
@@ -211,66 +254,63 @@ class Worker:
             self._fail_task(task_file, task)
             return
 
-        # Post-task hooks (run before commit so we commit the fully-fixed state)
+        # Post-task checks: pre-commit (auto-fix → stage → verify) then post hooks
         draft = False
         hook_output = None
         post_passed = True
         fix_attempts = 0
-        if effective_post := self.hook_runner.get_effective_post_hooks(
+        post_result = self.hook_runner.run_post_task_checks(
             work_volume, project_volume, project
-        ):
-            post_result = self.hook_runner.run_hooks(
-                effective_post, work_volume, project_volume, project
-            )
+        )
 
-            if not post_result.success:
-                post_passed = False
-                policy = project.post_task_policy
+        if not post_result.success:
+            post_passed = False
+            policy = project.post_task_policy
 
-                if policy == "fail":
+            if policy == "fail":
+                duration = int(
+                    (datetime.now(timezone.utc) - start_time).total_seconds()
+                )
+                task.result = TaskResult(
+                    status=TaskStatus.FAILED,
+                    error=f"Post-task checks failed:\n{post_result.output}",
+                    duration_seconds=duration,
+                    finished=datetime.now(timezone.utc),
+                    post_task_passed=False,
+                )
+                self._fail_task(task_file, task)
+                return
+
+            if policy in ("fix_or_fail", "fix_or_warn"):
+                post_result = self.fix_loop.run(
+                    task, project, work_volume, project_volume, post_result
+                )
+                fix_attempts = project.max_fix_attempts
+
+                if post_result.success:
+                    post_passed = True
+                elif policy == "fix_or_fail":
                     duration = int(
                         (datetime.now(timezone.utc) - start_time).total_seconds()
                     )
                     task.result = TaskResult(
                         status=TaskStatus.FAILED,
-                        error=f"Post-task hooks failed:\n{post_result.output}",
+                        error=f"Post-task checks failed after {fix_attempts} fix attempts:\n{post_result.output}",
                         duration_seconds=duration,
                         finished=datetime.now(timezone.utc),
                         post_task_passed=False,
+                        fix_attempts=fix_attempts,
                     )
                     self._fail_task(task_file, task)
                     return
-
-                if policy in ("fix_or_fail", "fix_or_warn"):
-                    post_result = self.fix_loop.run(
-                        task, project, work_volume, project_volume, post_result
-                    )
-                    fix_attempts = project.max_fix_attempts
-
-                    if post_result.success:
-                        post_passed = True
-                    elif policy == "fix_or_fail":
-                        duration = int(
-                            (datetime.now(timezone.utc) - start_time).total_seconds()
-                        )
-                        task.result = TaskResult(
-                            status=TaskStatus.FAILED,
-                            error=f"Post-task hooks failed after {fix_attempts} fix attempts:\n{post_result.output}",
-                            duration_seconds=duration,
-                            finished=datetime.now(timezone.utc),
-                            post_task_passed=False,
-                            fix_attempts=fix_attempts,
-                        )
-                        self._fail_task(task_file, task)
-                        return
-                    else:
-                        # fix_or_warn: proceed with draft PR
-                        draft = True
-                        hook_output = post_result.output
-
-                if policy == "warn" and not post_result.success:
+                else:
+                    # fix_or_warn: proceed with draft PR
                     draft = True
                     hook_output = post_result.output
+
+            if policy == "warn" and not post_result.success:
+                draft = True
+                hook_output = post_result.output
 
         # Check if there are actual changes before committing
         if not self._has_any_changes(work_volume, project_volume, task.ref, image):

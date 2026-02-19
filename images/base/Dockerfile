@@ -7,7 +7,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         less git procps sudo fzf man-db unzip gnupg2 \
         aggregate jq nano vim \
-        openssh-client curl pre-commit && \
+        openssh-client curl python3 python3-pip && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -15,6 +15,8 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --break-system-packages pre-commit
 
 # Install Claude Code CLI
 ENV CLAUDE_CODE_VERSION=2.1.49

@@ -6,11 +6,11 @@ import pytest
 
 from wowkmang.config import GlobalConfig, ProjectConfig
 from wowkmang.docker_runner import ContainerResult
-from wowkmang.hooks import HookResult
+from wowkmang.hooks import HookResult, HookRunner, HookType
 from wowkmang.models import Task, TaskSource, TaskSourceInfo, TaskStatus, task_to_yaml
 from wowkmang.task_queue import ensure_queue_dirs, save_task
 from wowkmang.summary import PRMetadata
-from wowkmang.worker import Worker
+from wowkmang.worker import FixLoop, Worker
 
 
 def _make_project(**overrides) -> ProjectConfig:
@@ -82,9 +82,8 @@ def setup(tmp_path):
     hook_runner.run_hooks.return_value = HookResult(
         success=True, output="ok", exit_code=0
     )
-    hook_runner.get_effective_pre_hooks.side_effect = lambda wd, pv, proj: proj.pre_task
-    hook_runner.get_effective_post_hooks.side_effect = (
-        lambda wd, pv, proj: proj.post_task
+    hook_runner.run_post_task_checks.return_value = HookResult(
+        success=True, output="ok", exit_code=0
     )
 
     fix_loop = MagicMock()
@@ -210,7 +209,7 @@ class TestProcessTask:
 
     @_patch_github
     def test_post_hook_fail_with_fail_policy(self, MockGH, setup):
-        setup["hook_runner"].run_hooks.return_value = HookResult(
+        setup["hook_runner"].run_post_task_checks.return_value = HookResult(
             success=False, output="tests failed", exit_code=1
         )
         setup["project"].post_task_policy = "fail"
@@ -228,7 +227,7 @@ class TestProcessTask:
 
     @_patch_github
     def test_post_hook_fail_with_warn_policy_creates_draft_pr(self, MockGH, setup):
-        setup["hook_runner"].run_hooks.return_value = HookResult(
+        setup["hook_runner"].run_post_task_checks.return_value = HookResult(
             success=False, output="tests failed", exit_code=1
         )
         setup["project"].post_task_policy = "warn"
@@ -252,7 +251,7 @@ class TestProcessTask:
 
     @_patch_github
     def test_fix_or_fail_enters_fix_loop_then_fails(self, MockGH, setup):
-        setup["hook_runner"].run_hooks.return_value = HookResult(
+        setup["hook_runner"].run_post_task_checks.return_value = HookResult(
             success=False, output="fail", exit_code=1
         )
         setup["fix_loop"].run.return_value = HookResult(
@@ -272,7 +271,7 @@ class TestProcessTask:
 
     @_patch_github
     def test_fix_or_warn_enters_fix_loop_then_drafts(self, MockGH, setup):
-        setup["hook_runner"].run_hooks.return_value = HookResult(
+        setup["hook_runner"].run_post_task_checks.return_value = HookResult(
             success=False, output="fail", exit_code=1
         )
         setup["fix_loop"].run.return_value = HookResult(
@@ -299,7 +298,7 @@ class TestProcessTask:
 
     @_patch_github
     def test_fix_loop_success_creates_regular_pr(self, MockGH, setup):
-        setup["hook_runner"].run_hooks.return_value = HookResult(
+        setup["hook_runner"].run_post_task_checks.return_value = HookResult(
             success=False, output="fail", exit_code=1
         )
         setup["fix_loop"].run.return_value = HookResult(
@@ -910,6 +909,151 @@ class TestHasChanges:
         )
 
         assert worker._has_changes("work-vol", "proj-vol", "main", "img") is False
+
+
+class TestFixLoop:
+    def _make_fix_loop(self, post_task_results):
+        docker_runner = MagicMock()
+        docker_runner.run_claude_code.return_value = ContainerResult(
+            exit_code=0, logs="fixed"
+        )
+        hook_runner = MagicMock()
+        hook_runner.run_post_task_checks.side_effect = [
+            HookResult(exit_code=r, success=(r == 0), output=f"run_{i}")
+            for i, r in enumerate(post_task_results)
+        ]
+        return FixLoop(docker_runner, hook_runner), docker_runner, hook_runner
+
+    def _make_task(self):
+        from wowkmang.models import Task, TaskSource, TaskSourceInfo
+
+        return Task(
+            project="test",
+            repo="https://github.com/u/p",
+            task="Fix bug",
+            source=TaskSourceInfo(type=TaskSource.API),
+        )
+
+    def _make_project(self, **overrides):
+        from wowkmang.config import ProjectConfig
+
+        defaults = {
+            "name": "test",
+            "repo": "https://github.com/u/p",
+            "max_fix_attempts": 2,
+        }
+        defaults.update(overrides)
+        return ProjectConfig(**defaults)
+
+    def test_fix_succeeds_on_first_attempt(self):
+        fix_loop, docker_runner, hook_runner = self._make_fix_loop([0])
+        task = self._make_task()
+        project = self._make_project()
+        initial_failure = HookResult(success=False, output="tests failed", exit_code=1)
+
+        result = fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
+
+        assert result.success is True
+        docker_runner.run_claude_code.assert_called_once()
+        assert (
+            "tests failed"
+            in docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
+        )
+
+    def test_fix_uses_continue_session(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([0])
+        fix_loop.run(
+            self._make_task(),
+            self._make_project(max_fix_attempts=1),
+            "/work",
+            "proj-vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert (
+            docker_runner.run_claude_code.call_args.kwargs["continue_session"] is True
+        )
+
+    def test_fix_passes_project_volume(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([0])
+        fix_loop.run(
+            self._make_task(),
+            self._make_project(max_fix_attempts=1),
+            "/work",
+            "my-vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert (
+            docker_runner.run_claude_code.call_args.kwargs["project_volume"] == "my-vol"
+        )
+
+    def test_fix_succeeds_on_second_attempt(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([1, 0])
+
+        result = fix_loop.run(
+            self._make_task(),
+            self._make_project(max_fix_attempts=2),
+            "/work",
+            "vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert result.success is True
+        assert docker_runner.run_claude_code.call_count == 2
+
+    def test_fix_exhausts_attempts_and_fails(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([1, 1])
+
+        result = fix_loop.run(
+            self._make_task(),
+            self._make_project(max_fix_attempts=2),
+            "/work",
+            "vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert result.success is False
+        assert docker_runner.run_claude_code.call_count == 2
+
+    def test_fix_uses_run_post_task_checks(self):
+        """Fix loop calls run_post_task_checks (full flow) not just post hooks."""
+        fix_loop, _, hook_runner = self._make_fix_loop([0])
+        fix_loop.run(
+            self._make_task(),
+            self._make_project(max_fix_attempts=1),
+            "/work",
+            "vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        hook_runner.run_post_task_checks.assert_called_once()
+
+    def test_fix_uses_task_model_override(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([0])
+        task = self._make_task()
+        task.model = "opus"
+        fix_loop.run(
+            task,
+            self._make_project(),
+            "/work",
+            "vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert docker_runner.run_claude_code.call_args.kwargs["model"] == "opus"
+
+    def test_fix_uses_project_default_model(self):
+        fix_loop, docker_runner, _ = self._make_fix_loop([0])
+        fix_loop.run(
+            self._make_task(),
+            self._make_project(default_model="haiku"),
+            "/work",
+            "vol",
+            HookResult(success=False, output="fail", exit_code=1),
+        )
+
+        assert docker_runner.run_claude_code.call_args.kwargs["model"] == "haiku"
 
 
 class TestChownVolume:
