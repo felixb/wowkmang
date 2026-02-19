@@ -18,11 +18,9 @@ class TestGlobalConfig:
 
     def test_custom_values(self):
         config = GlobalConfig(
-            cache_volume="my-cache",
             port=9000,
             api_tokens="abc,def",
         )
-        assert config.cache_volume == "my-cache"
         assert config.port == 9000
         assert config.api_tokens == "abc,def"
 

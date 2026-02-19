@@ -16,12 +16,15 @@ class HookRunner:
         self.docker_runner = docker_runner
         self._has_pre_commit_config: dict[str, bool] = {}
 
-    def _check_pre_commit_config(self, work_dir: str, project: ProjectConfig) -> bool:
+    def _check_pre_commit_config(
+        self, work_dir: str, project_volume: str, project: ProjectConfig
+    ) -> bool:
         if work_dir in self._has_pre_commit_config:
             return self._has_pre_commit_config[work_dir]
 
         result = self.docker_runner.run_command(
             work_dir=work_dir,
+            project_volume=project_volume,
             command="test -f .pre-commit-config.yaml",
             image=project.docker_image,
             environment={
@@ -34,22 +37,30 @@ class HookRunner:
         return has_config
 
     def get_effective_post_hooks(
-        self, work_dir: str, project: ProjectConfig
+        self, work_dir: str, project_volume: str, project: ProjectConfig
     ) -> list[str]:
         commands = project.post_task
-        if not commands and not self._check_pre_commit_config(work_dir, project):
+        if not commands and not self._check_pre_commit_config(
+            work_dir, project_volume, project
+        ):
             return []
         effective = list(commands)
-        if self._check_pre_commit_config(work_dir, project):
+        if self._check_pre_commit_config(work_dir, project_volume, project):
             if not any("pre-commit run" in cmd for cmd in effective):
                 effective.append("pre-commit run -a")
         return effective
 
     def run_hooks(
-        self, commands: list[str], work_dir: str, project: ProjectConfig
+        self,
+        commands: list[str],
+        work_dir: str,
+        project_volume: str,
+        project: ProjectConfig,
     ) -> HookResult:
         """Run hook commands in a container. Returns result with success/failure."""
-        result = self.docker_runner.run_hooks(work_dir, commands, project)
+        result = self.docker_runner.run_hooks(
+            work_dir, project_volume, commands, project
+        )
         return HookResult(
             success=result.exit_code == 0,
             output=result.logs,
@@ -67,6 +78,7 @@ class FixLoop:
         task: Task,
         project: ProjectConfig,
         work_dir: str,
+        project_volume: str,
         hook_failure: HookResult,
     ) -> HookResult:
         """Attempt to fix post-task hook failures. Returns final hook result."""
@@ -81,15 +93,20 @@ class FixLoop:
             model = task.model or project.default_model
             self.docker_runner.run_claude_code(
                 work_dir=work_dir,
+                project_volume=project_volume,
                 task_prompt=fix_prompt,
                 model=model,
                 project=project,
                 timeout_minutes=project.timeout_minutes,
+                continue_session=True,
             )
 
             last_result = self.hook_runner.run_hooks(
-                self.hook_runner.get_effective_post_hooks(work_dir, project),
+                self.hook_runner.get_effective_post_hooks(
+                    work_dir, project_volume, project
+                ),
                 work_dir,
+                project_volume,
                 project,
             )
 

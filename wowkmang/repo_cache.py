@@ -13,10 +13,11 @@ class RepoCache:
         repo_url: str,
         ref: str,
         work_volume: str,
+        project_volume: str,
         image: str,
         github_token: str | None = None,
     ) -> str:
-        """Clone repo into work volume using cache for speed. Returns branch name."""
+        """Clone repo into work volume using project cache for speed. Returns branch name."""
         authed_url = self._authed_url(repo_url, github_token)
         cache_subdir = self.cache_subdir(repo_url)
         branch_name = f"wowkmang/{uuid.uuid4().hex[:8]}"
@@ -30,9 +31,7 @@ class RepoCache:
             f"  mkdir -p /cache\n"
             f"  git clone --bare {authed_url} /cache/{cache_subdir}\n"
             f"fi\n"
-            f"rm -rf /workspace/.repo-cache\n"
-            f"cp -r /cache/{cache_subdir} /workspace/.repo-cache\n"
-            f"git clone --reference /workspace/.repo-cache {authed_url} /workspace/repo\n"
+            f"git clone --reference /cache/{cache_subdir} {authed_url} /workspace/repo\n"
             f"cd /workspace/repo\n"
             f"git checkout -b {branch_name} origin/{ref}\n"
         )
@@ -40,6 +39,7 @@ class RepoCache:
         environment = {"GIT_TERMINAL_PROMPT": "0"}
         result = self.docker_runner.run_command(
             work_dir=work_volume,
+            project_volume=project_volume,
             command=["sh", "-c", script],
             image=image,
             environment=environment,

@@ -55,6 +55,7 @@ class TestPrepareWorkdir:
             "https://github.com/user/project",
             "main",
             "work-vol-123",
+            "proj-vol",
             "ghcr.io/org/image:latest",
             github_token="ghp_tok",
         )
@@ -66,6 +67,7 @@ class TestPrepareWorkdir:
         call_kwargs = docker_runner.run_command.call_args.kwargs
         assert call_kwargs["image"] == "ghcr.io/org/image:latest"
         assert call_kwargs["work_dir"] == "work-vol-123"
+        assert call_kwargs["project_volume"] == "proj-vol"
         assert call_kwargs["environment"] == {"GIT_TERMINAL_PROMPT": "0"}
 
         command = call_kwargs["command"]
@@ -84,6 +86,7 @@ class TestPrepareWorkdir:
             "https://github.com/user/project",
             "main",
             "vol",
+            "proj-vol",
             "img",
         )
 
@@ -100,13 +103,14 @@ class TestPrepareWorkdir:
                 "https://github.com/user/project",
                 "main",
                 "vol",
+                "proj-vol",
                 "img",
             )
             assert False, "Should have raised"
         except RuntimeError as e:
             assert "repo not found" in str(e)
 
-    def test_script_contains_cache_logic(self):
+    def test_script_uses_cache_directly_no_workdir_copy(self):
         docker_runner = _mock_docker_runner()
         cache = RepoCache(docker_runner)
 
@@ -114,11 +118,14 @@ class TestPrepareWorkdir:
             "https://github.com/user/project",
             "develop",
             "vol",
+            "proj-vol",
             "img",
         )
 
         script = docker_runner.run_command.call_args.kwargs["command"][2]
+        # Uses /cache directly as reference — no copy to /workspace/.repo-cache
+        assert "/workspace/.repo-cache" not in script
+        assert "--reference /cache/github.com_user_project" in script
         assert "if [ -d /cache/" in script
         assert "git clone --bare" in script
-        assert "git clone --reference" in script
         assert "origin/develop" in script

@@ -1,5 +1,4 @@
 import logging
-import shlex
 import uuid
 
 from pydantic import BaseModel
@@ -21,13 +20,11 @@ class DockerRunner:
     def __init__(
         self,
         docker_client,
-        cache_volume: str,
         pull_token: str = "",
         github_token: str = "",
         default_uid: str = "1000:1000",
     ):
         self.client = docker_client
-        self.cache_volume = cache_volume
         self.pull_token = pull_token
         self.github_token = github_token
         self.default_uid = default_uid
@@ -77,6 +74,21 @@ class DockerRunner:
         logger.debug("Created volume %s", name)
         return name
 
+    def ensure_project_volume(self, project_name: str) -> str:
+        """Get or create a persistent per-project Docker volume. Returns volume name.
+
+        Project volumes are not labeled with wowkmang so kill_stale_containers()
+        won't delete them.
+        """
+        name = f"wowkmang-project-{project_name}"
+        try:
+            self.client.volumes.get(name)
+            logger.debug("Reusing project volume %s", name)
+        except Exception:
+            self.client.volumes.create(name=name)
+            logger.debug("Created project volume %s", name)
+        return name
+
     def remove_volume(self, name: str) -> None:
         """Remove a Docker named volume."""
         try:
@@ -86,9 +98,74 @@ class DockerRunner:
         except Exception:
             logger.warning("Could not remove volume %s", name)
 
+    def seed_credentials(
+        self,
+        image: str,
+        source_dir: str,
+        project_volume: str,
+    ) -> ContainerResult:
+        """Copy credentials.json from host dir into /cache/.claude/ in project volume."""
+        volumes = {
+            source_dir: {"bind": "/source", "mode": "ro"},
+            project_volume: {"bind": "/cache", "mode": "rw"},
+        }
+        return self._run_container(
+            image=image,
+            command=[
+                "sh",
+                "-c",
+                "mkdir -p /cache/.claude && cp -a /source/.credentials.json /cache/.claude/",
+            ],
+            environment={},
+            volumes=volumes,
+            timeout_seconds=60,
+            working_dir="/",
+        )
+
+    def chown_volume(
+        self,
+        image: str,
+        work_volume: str,
+        uid: str = "1000:1000",
+    ) -> ContainerResult:
+        """Chown workspace so non-root containers have a writable /workspace."""
+        volumes = {
+            work_volume: {"bind": "/workspace", "mode": "rw"},
+        }
+        script = f"chown -R {uid} /workspace"
+        return self._run_container(
+            image=image,
+            command=["sh", "-c", script],
+            environment={},
+            volumes=volumes,
+            timeout_seconds=120,
+            working_dir="/",
+        )
+
+    def chown_project_volume(
+        self,
+        image: str,
+        project_volume: str,
+        uid: str = "1000:1000",
+    ) -> ContainerResult:
+        """Chown the entire /cache mount to container uid."""
+        volumes = {
+            project_volume: {"bind": "/cache", "mode": "rw"},
+        }
+        script = f"mkdir -p /cache && chown -R {uid} /cache"
+        return self._run_container(
+            image=image,
+            command=["sh", "-c", script],
+            environment={},
+            volumes=volumes,
+            timeout_seconds=120,
+            working_dir="/",
+        )
+
     def run_command(
         self,
         work_dir: str,
+        project_volume: str,
         command: str | list[str],
         image: str,
         environment: dict | None = None,
@@ -98,7 +175,7 @@ class DockerRunner:
         """Run a command in a container with wiring (volumes, etc)."""
         if user is None:
             user = self.default_uid
-        volumes = self._build_volumes(work_dir)
+        volumes = self._build_volumes(work_dir, project_volume)
         return self._run_container(
             image=image,
             command=command,
@@ -108,113 +185,10 @@ class DockerRunner:
             user=user,
         )
 
-    def seed_volume(
-        self,
-        image: str,
-        source_host_path: str,
-        target_volume: str,
-        target_path: str = "/workspace/.claude-config",
-    ) -> ContainerResult:
-        """Copy files from a host path into a subdirectory of the work volume."""
-        volumes = {
-            source_host_path: {"bind": "/source", "mode": "ro"},
-            target_volume: {"bind": "/workspace", "mode": "rw"},
-        }
-        return self._run_container(
-            image=image,
-            command=[
-                "sh",
-                "-c",
-                f"mkdir -p {target_path} && cp -a /source/. {target_path}/",
-            ],
-            environment={},
-            volumes=volumes,
-            timeout_seconds=60,
-            working_dir="/",
-        )
-
-    def copy_to_workdir(
-        self,
-        work_volume: str,
-        cache_subdir: str,
-        image: str,
-        user: str | None = None,
-    ) -> ContainerResult:
-        """Copy bare repo cache into workdir for self-contained debugging."""
-        if user is None:
-            user = self.default_uid
-        script = (
-            f"mkdir -p /workspace/.cache && "
-            f"cp -a /cache/{cache_subdir} /workspace/.cache/{cache_subdir}"
-        )
-        volumes = {
-            work_volume: {"bind": "/workspace", "mode": "rw"},
-            self.cache_volume: {"bind": "/cache", "mode": "ro"},
-        }
-        return self._run_container(
-            image=image,
-            command=["sh", "-c", script],
-            environment={},
-            volumes=volumes,
-            timeout_seconds=120,
-            working_dir="/workspace",
-            user=user,
-        )
-
-    def chown_volume(
-        self,
-        image: str,
-        work_volume: str,
-        uid: str = "1000:1000",
-    ) -> ContainerResult:
-        """Chown workspace and create .home so non-root containers have a writable HOME."""
-        volumes = {
-            work_volume: {"bind": "/workspace", "mode": "rw"},
-        }
-        script = f"mkdir -p /workspace/.home && chown -R {uid} /workspace"
-        return self._run_container(
-            image=image,
-            command=["sh", "-c", script],
-            environment={},
-            volumes=volumes,
-            timeout_seconds=120,
-            working_dir="/",
-        )
-
-    def chown_cache_subdir(
-        self,
-        image: str,
-        cache_subdir: str,
-        uid: str = "1000:1000",
-    ) -> ContainerResult:
-        """Chown the cache volume root and subdir so non-root containers can write to them.
-
-        The volume root chown is needed on a fresh volume (root-owned by default) so
-        non-root containers can create new repo subdirs. The subdir chown fixes repos
-        that were cloned by a previous root container.
-
-        Note: concurrent tasks sharing the same cache are not protected against races —
-        the current single-worker design makes this safe.
-        """
-        volumes = {
-            self.cache_volume: {"bind": "/cache", "mode": "rw"},
-        }
-        script = (
-            f"mkdir -p /cache/{cache_subdir} && "
-            f"chown -R {uid} /cache/{cache_subdir}"
-        )
-        return self._run_container(
-            image=image,
-            command=["sh", "-c", script],
-            environment={},
-            volumes=volumes,
-            timeout_seconds=120,
-            working_dir="/",
-        )
-
     def run_claude_code(
         self,
         work_dir: str,
+        project_volume: str,
         task_prompt: str,
         model: str,
         project: ProjectConfig,
@@ -241,17 +215,10 @@ class DockerRunner:
             "GITHUB_TOKEN": project.github_token or self.github_token,
         }
 
-        # Prepend bootstrap script to copy claude config from volume to $HOME/.claude
-        bootstrap = (
-            "mkdir -p /workspace/.home/.claude && "
-            "{ [ -d /workspace/.claude-config ] && "
-            "cp -a /workspace/.claude-config/. /workspace/.home/.claude || true; }"
-        )
-        bootstrap_command = ["sh", "-c", f'{bootstrap} && "$@"', "--"] + command
-
         return self.run_command(
             work_dir=work_dir,
-            command=bootstrap_command,
+            project_volume=project_volume,
+            command=command,
             image=project.docker_image,
             environment=environment,
             timeout_seconds=timeout_minutes * 60,
@@ -260,6 +227,7 @@ class DockerRunner:
     def run_hooks(
         self,
         work_dir: str,
+        project_volume: str,
         commands: list[str],
         project: ProjectConfig,
     ) -> ContainerResult:
@@ -268,6 +236,7 @@ class DockerRunner:
         for cmd in commands:
             last_result = self.run_command(
                 work_dir=work_dir,
+                project_volume=project_volume,
                 command=cmd,
                 image=project.docker_image,
                 environment={"GITHUB_TOKEN": project.github_token or self.github_token},
@@ -301,10 +270,10 @@ class DockerRunner:
         except Exception:
             pass
 
-    def _build_volumes(self, work_dir: str) -> dict:
+    def _build_volumes(self, work_dir: str, project_volume: str) -> dict:
         return {
             work_dir: {"bind": "/workspace", "mode": "rw"},
-            self.cache_volume: {"bind": "/cache", "mode": "rw"},
+            project_volume: {"bind": "/cache", "mode": "rw"},
         }
 
     def _run_container(
@@ -319,7 +288,7 @@ class DockerRunner:
     ) -> ContainerResult:
         effective_environment = {"GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"} | environment
         if user:
-            effective_environment["HOME"] = "/workspace/.home"
+            effective_environment["HOME"] = "/cache"
 
         kwargs = dict(
             image=image,

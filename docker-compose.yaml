@@ -8,10 +8,8 @@ services:
       - ./projects:/app/projects:ro
       - wowkmang-tasks:/app/tasks
     environment:
-      - WOWKMANG_CACHE_VOLUME=wowkmang-cache
       - WOWKMANG_HOST_CLAUDE_CONFIG_DIR=${HOME}/.claude
       - WOWKMANG_API_TOKENS=${WOWKMANG_API_TOKENS}
     restart: unless-stopped
 volumes:
   wowkmang-tasks:
-  wowkmang-cache:

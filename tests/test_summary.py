@@ -62,6 +62,7 @@ class TestGenerate:
             "diff content here",
             project=project,
             work_dir="/work",
+            project_volume="proj-vol",
         )
 
         assert isinstance(result, PRMetadata)
@@ -74,6 +75,7 @@ class TestGenerate:
         assert call_kwargs["model"] == "haiku"
         assert call_kwargs["continue_session"] is True
         assert call_kwargs["output_format"] == "json"
+        assert call_kwargs["project_volume"] == "proj-vol"
 
     def test_diff_truncation(self):
         docker_runner = _mock_docker_runner(VALID_YAML)

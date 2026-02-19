@@ -41,7 +41,6 @@ async def lifespan(app: FastAPI):
     docker_client = docker.from_env()
     docker_runner = DockerRunner(
         docker_client,
-        cache_volume=config.cache_volume,
         pull_token=config.pull_token,
         github_token=config.github_token,
         default_uid=config.container_uid,

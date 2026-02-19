@@ -51,7 +51,7 @@ class TestHookRunner:
         hook_runner = HookRunner(docker_runner)
         project = _make_project()
 
-        result = hook_runner.run_hooks(["uv sync"], "/work", project)
+        result = hook_runner.run_hooks(["uv sync"], "/work", "proj-vol", project)
 
         assert result.success is True
         assert result.exit_code == 0
@@ -65,7 +65,7 @@ class TestHookRunner:
         hook_runner = HookRunner(docker_runner)
         project = _make_project()
 
-        result = hook_runner.run_hooks(["uv sync"], "/work", project)
+        result = hook_runner.run_hooks(["uv sync"], "/work", "proj-vol", project)
 
         assert result.success is False
         assert result.exit_code == 1
@@ -82,13 +82,44 @@ class TestFixLoop:
         task = _make_task()
         initial_failure = HookResult(success=False, output="tests failed", exit_code=1)
 
-        result = fix_loop.run(task, project, "/work", initial_failure)
+        result = fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert result.success is True
         docker_runner.run_claude_code.assert_called_once()
         assert (
             "tests failed"
             in docker_runner.run_claude_code.call_args.kwargs["task_prompt"]
+        )
+
+    def test_fix_uses_continue_session(self):
+        """FixLoop must call run_claude_code with continue_session=True."""
+        docker_runner = _mock_docker_runner(hook_exit_codes=[0])
+        hook_runner = HookRunner(docker_runner)
+        fix_loop = FixLoop(docker_runner, hook_runner)
+        project = _make_project(max_fix_attempts=1)
+        task = _make_task()
+        initial_failure = HookResult(success=False, output="fail", exit_code=1)
+
+        fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
+
+        assert (
+            docker_runner.run_claude_code.call_args.kwargs["continue_session"] is True
+        )
+
+    def test_fix_passes_project_volume(self):
+        """FixLoop must pass project_volume to run_claude_code."""
+        docker_runner = _mock_docker_runner(hook_exit_codes=[0])
+        hook_runner = HookRunner(docker_runner)
+        fix_loop = FixLoop(docker_runner, hook_runner)
+        project = _make_project(max_fix_attempts=1)
+        task = _make_task()
+        initial_failure = HookResult(success=False, output="fail", exit_code=1)
+
+        fix_loop.run(task, project, "/work", "my-proj-vol", initial_failure)
+
+        assert (
+            docker_runner.run_claude_code.call_args.kwargs["project_volume"]
+            == "my-proj-vol"
         )
 
     def test_fix_succeeds_on_second_attempt(self):
@@ -100,7 +131,7 @@ class TestFixLoop:
         task = _make_task()
         initial_failure = HookResult(success=False, output="fail", exit_code=1)
 
-        result = fix_loop.run(task, project, "/work", initial_failure)
+        result = fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert result.success is True
         assert docker_runner.run_claude_code.call_count == 2
@@ -114,7 +145,7 @@ class TestFixLoop:
         task = _make_task()
         initial_failure = HookResult(success=False, output="fail", exit_code=1)
 
-        result = fix_loop.run(task, project, "/work", initial_failure)
+        result = fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert result.success is False
         assert docker_runner.run_claude_code.call_count == 2
@@ -127,7 +158,7 @@ class TestFixLoop:
         task = _make_task()
         initial_failure = HookResult(success=False, output="fail", exit_code=1)
 
-        result = fix_loop.run(task, project, "/work", initial_failure)
+        result = fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert result.success is True
         # Only one attempt needed
@@ -141,7 +172,7 @@ class TestFixLoop:
         task = _make_task(model="opus")
         initial_failure = HookResult(success=False, output="fail", exit_code=1)
 
-        fix_loop.run(task, project, "/work", initial_failure)
+        fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert docker_runner.run_claude_code.call_args.kwargs["model"] == "opus"
 
@@ -153,6 +184,6 @@ class TestFixLoop:
         task = _make_task()
         initial_failure = HookResult(success=False, output="fail", exit_code=1)
 
-        fix_loop.run(task, project, "/work", initial_failure)
+        fix_loop.run(task, project, "/work", "proj-vol", initial_failure)
 
         assert docker_runner.run_claude_code.call_args.kwargs["model"] == "haiku"

@@ -10,7 +10,6 @@ class GlobalConfig(BaseSettings):
         env_prefix="WOWKMANG_", env_file=".env", env_file_encoding="utf-8"
     )
 
-    cache_volume: str = "wowkmang-cache"
     host_claude_config_dir: str = ""
     projects_dir: Path = Path("./projects")
     tasks_dir: Path = Path("./tasks")

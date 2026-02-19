@@ -35,11 +35,12 @@ class TestRunClaudeCode:
     def test_calls_containers_run_with_correct_args(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
         project = _make_project()
 
         result = runner.run_claude_code(
             work_dir="work-vol-123",
+            project_volume="proj-vol",
             task_prompt="Fix the bug",
             model="sonnet",
             project=project,
@@ -54,7 +55,7 @@ class TestRunClaudeCode:
         assert kwargs["mem_limit"] == "4g"
         assert kwargs["environment"]["CLAUDE_MODEL"] == "sonnet"
         assert kwargs["environment"]["GITHUB_TOKEN"] == "ghp_secret"
-        assert kwargs["environment"]["HOME"] == "/workspace/.home"
+        assert kwargs["environment"]["HOME"] == "/cache"
         assert kwargs["entrypoint"] == ""
         assert kwargs["user"] == "1000:1000"
         assert "work-vol-123" in kwargs["volumes"]
@@ -62,10 +63,11 @@ class TestRunClaudeCode:
     def test_returns_container_result(self):
         container = _mock_container(exit_code=0, logs=b"all done")
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         result = runner.run_claude_code(
             work_dir="work-vol",
+            project_volume="proj-vol",
             task_prompt="task",
             model="sonnet",
             project=_make_project(),
@@ -79,10 +81,11 @@ class TestRunClaudeCode:
     def test_nonzero_exit_code_returned(self):
         container = _mock_container(exit_code=1, logs=b"error occurred")
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         result = runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="task",
             model="sonnet",
             project=_make_project(),
@@ -92,13 +95,14 @@ class TestRunClaudeCode:
         assert result.exit_code == 1
         assert result.logs == "error occurred"
 
-    def test_command_is_list(self):
+    def test_command_is_list_with_no_bootstrap(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="Fix the bug",
             model="sonnet",
             project=_make_project(),
@@ -107,25 +111,23 @@ class TestRunClaudeCode:
 
         command = docker_client.containers.run.call_args.kwargs["command"]
         assert isinstance(command, list)
-        assert command[0] == "sh"
-        assert command[1] == "-c"
-        assert "mkdir -p /workspace/.home/.claude" in command[2]
-        assert "cp -a /workspace/.claude-config/." in command[2]
-        assert "|| true" in command[2]
-        assert command[3] == "--"
-        assert command[4] == "claude"
+        assert command[0] == "claude"
         assert "--model" in command
         assert "sonnet" in command
         assert "Fix the bug" in command
+        # No bootstrap script
+        assert "mkdir" not in " ".join(str(c) for c in command)
+        assert ".claude-config" not in " ".join(str(c) for c in command)
 
     def test_extra_instructions_prepended_to_prompt(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
         project = _make_project(extra_instructions="Always write tests.")
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="Fix the bug",
             model="sonnet",
             project=project,
@@ -142,11 +144,12 @@ class TestRunClaudeCode:
         container = _mock_container()
         container.wait.side_effect = Exception("timeout")
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         with pytest.raises(Exception, match="timeout"):
             runner.run_claude_code(
                 work_dir="/w",
+                project_volume="proj-vol",
                 task_prompt="task",
                 model="sonnet",
                 project=_make_project(),
@@ -158,10 +161,11 @@ class TestRunClaudeCode:
     def test_container_removed_on_success(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="t",
             model="s",
             project=_make_project(),
@@ -174,11 +178,12 @@ class TestRunClaudeCode:
         container = _mock_container()
         container.wait.side_effect = RuntimeError("boom")
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         with pytest.raises(RuntimeError):
             runner.run_claude_code(
                 work_dir="/w",
+                project_volume="proj-vol",
                 task_prompt="t",
                 model="s",
                 project=_make_project(),
@@ -187,13 +192,14 @@ class TestRunClaudeCode:
 
         container.remove.assert_called_once()
 
-    def test_cache_volume_mounted(self):
+    def test_project_volume_mounted_as_cache(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache-vol")
+        runner = DockerRunner(docker_client)
 
         runner.run_claude_code(
             work_dir="work-vol",
+            project_volume="my-project-vol",
             task_prompt="t",
             model="s",
             project=_make_project(),
@@ -201,16 +207,17 @@ class TestRunClaudeCode:
         )
 
         volumes = docker_client.containers.run.call_args.kwargs["volumes"]
-        assert "my-cache-vol" in volumes
-        assert volumes["my-cache-vol"]["bind"] == "/cache"
+        assert "my-project-vol" in volumes
+        assert volumes["my-project-vol"]["bind"] == "/cache"
 
     def test_container_labeled(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="t",
             model="s",
             project=_make_project(),
@@ -223,10 +230,11 @@ class TestRunClaudeCode:
     def test_continue_session_flag(self):
         container = _mock_container()
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="summarize",
             model="haiku",
             project=_make_project(),
@@ -237,7 +245,7 @@ class TestRunClaudeCode:
 
         command = docker_client.containers.run.call_args.kwargs["command"]
         assert isinstance(command, list)
-        assert command[0] == "sh"
+        assert command[0] == "claude"
         assert "--continue" in command
         assert "--output-format" in command
         assert "json" in command
@@ -249,10 +257,11 @@ class TestRunHooks:
         container2 = _mock_container(exit_code=0, logs=b"passed")
         docker_client = MagicMock()
         docker_client.containers.run.side_effect = [container1, container2]
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         result = runner.run_hooks(
             work_dir="work-vol",
+            project_volume="proj-vol",
             commands=["uv sync", "uv run pytest"],
             project=_make_project(),
         )
@@ -263,10 +272,11 @@ class TestRunHooks:
     def test_stops_on_first_failure(self):
         container1 = _mock_container(exit_code=1, logs=b"sync failed")
         docker_client = _mock_docker_client(container1)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         result = runner.run_hooks(
             work_dir="/w",
+            project_volume="proj-vol",
             commands=["uv sync", "uv run pytest"],
             project=_make_project(),
         )
@@ -278,10 +288,11 @@ class TestRunHooks:
 
     def test_empty_commands_returns_success(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         result = runner.run_hooks(
             work_dir="/w",
+            project_volume="proj-vol",
             commands=[],
             project=_make_project(),
         )
@@ -297,7 +308,7 @@ class TestKillStaleContainers:
         docker_client = MagicMock()
         docker_client.containers.list.return_value = [container1, container2]
         docker_client.volumes.list.return_value = []
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.kill_stale_containers()
 
@@ -315,7 +326,7 @@ class TestKillStaleContainers:
         docker_client = MagicMock()
         docker_client.containers.list.return_value = [container]
         docker_client.volumes.list.return_value = []
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         # Should not raise
         runner.kill_stale_containers()
@@ -326,7 +337,7 @@ class TestKillStaleContainers:
         docker_client = MagicMock()
         docker_client.containers.list.return_value = []
         docker_client.volumes.list.return_value = [vol1, vol2]
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.kill_stale_containers()
 
@@ -340,7 +351,7 @@ class TestKillStaleContainers:
 class TestCreateVolume:
     def test_creates_volume_with_label(self):
         docker_client = MagicMock()
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         name = runner.create_volume(prefix="wowkmang-work")
 
@@ -351,10 +362,54 @@ class TestCreateVolume:
         )
 
 
+class TestEnsureProjectVolume:
+    def test_creates_volume_without_wowkmang_label(self):
+        docker_client = MagicMock()
+        docker_client.volumes.get.side_effect = Exception("not found")
+        runner = DockerRunner(docker_client)
+
+        name = runner.ensure_project_volume("myproject")
+
+        assert name == "wowkmang-project-myproject"
+        docker_client.volumes.create.assert_called_once_with(
+            name="wowkmang-project-myproject"
+        )
+        # No wowkmang label so it won't be cleaned up by kill_stale_containers
+        call_kwargs = docker_client.volumes.create.call_args
+        assert "labels" not in call_kwargs.kwargs
+
+    def test_reuses_existing_volume(self):
+        docker_client = MagicMock()
+        existing_vol = MagicMock()
+        docker_client.volumes.get.return_value = existing_vol
+        runner = DockerRunner(docker_client)
+
+        name = runner.ensure_project_volume("myproject")
+
+        assert name == "wowkmang-project-myproject"
+        docker_client.volumes.get.assert_called_once_with("wowkmang-project-myproject")
+        docker_client.volumes.create.assert_not_called()
+
+    def test_project_volume_not_deleted_by_kill_stale(self):
+        """ensure_project_volume must not add the wowkmang label."""
+        docker_client = MagicMock()
+        docker_client.volumes.get.side_effect = Exception("not found")
+        runner = DockerRunner(docker_client)
+
+        runner.ensure_project_volume("proj")
+
+        create_call = docker_client.volumes.create.call_args
+        # Either no kwargs or no labels key
+        kwargs = create_call.kwargs if create_call.kwargs else {}
+        args_dict = create_call.args[0] if create_call.args else {}
+        assert "labels" not in kwargs
+        assert "labels" not in args_dict
+
+
 class TestRemoveVolume:
     def test_removes_volume(self):
         docker_client = MagicMock()
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         runner.remove_volume("wowkmang-work-abc123")
 
@@ -364,45 +419,164 @@ class TestRemoveVolume:
     def test_ignores_error(self):
         docker_client = MagicMock()
         docker_client.volumes.get.side_effect = Exception("not found")
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
         # Should not raise
         runner.remove_volume("nonexistent")
 
 
-class TestSeedVolume:
-    def test_copies_files_into_volume_subpath(self):
+class TestSeedCredentials:
+    def test_copies_credentials_into_project_volume(self):
         container = _mock_container(exit_code=0, logs=b"")
         docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
 
-        result = runner.seed_volume(
+        result = runner.seed_credentials(
             image="img:latest",
-            source_host_path="/home/user/.claude",
-            target_volume="work-vol",
-            target_path="/workspace/.claude-config",
+            source_dir="/home/user/.claude",
+            project_volume="proj-vol",
         )
 
         assert result.exit_code == 0
         kwargs = docker_client.containers.run.call_args.kwargs
-        # Volume is mounted at /workspace (not at target_path)
         assert kwargs["volumes"]["/home/user/.claude"]["bind"] == "/source"
         assert kwargs["volumes"]["/home/user/.claude"]["mode"] == "ro"
-        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
-        assert kwargs["volumes"]["work-vol"]["mode"] == "rw"
-        # cp goes to the correct subpath within the volume
+        assert kwargs["volumes"]["proj-vol"]["bind"] == "/cache"
+        assert kwargs["volumes"]["proj-vol"]["mode"] == "rw"
+        # Copies only credentials.json
         script = kwargs["command"][2]
-        assert "/workspace/.claude-config" in script
-        assert "cp -a /source/." in script
+        assert "credentials.json" in script
+        assert "mkdir -p /cache/.claude" in script
+        assert "cp -a /source/.credentials.json /cache/.claude/" in script
+        # Runs as root (no user)
         assert "user" not in kwargs
+
+
+class TestChownVolume:
+    def test_chowns_workspace(self):
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        result = runner.chown_volume(
+            image="img:latest",
+            work_volume="work-vol",
+            uid="1000:1000",
+        )
+
+        assert result.exit_code == 0
+        kwargs = docker_client.containers.run.call_args.kwargs
+        script = kwargs["command"][2]
+        assert "chown -R 1000:1000 /workspace" in script
+        # No longer creates .home
+        assert "mkdir -p /workspace/.home" not in script
+        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
+        assert "user" not in kwargs  # runs as root
+
+    def test_custom_uid(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        runner.chown_volume(
+            image="img",
+            work_volume="vol",
+            uid="2000:2000",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        script = kwargs["command"][2]
+        assert "chown -R 2000:2000 /workspace" in script
+
+
+class TestChownProjectVolume:
+    def test_creates_and_chowns_cache(self):
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        result = runner.chown_project_volume(
+            image="img:latest",
+            project_volume="proj-vol",
+            uid="1000:1000",
+        )
+
+        assert result.exit_code == 0
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["volumes"]["proj-vol"]["bind"] == "/cache"
+        assert "user" not in kwargs  # runs as root
+        script = kwargs["command"][2]
+        assert "mkdir -p /cache" in script
+        assert "chown -R 1000:1000 /cache" in script
+
+    def test_custom_uid(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        runner.chown_project_volume(
+            image="img",
+            project_volume="proj-vol",
+            uid="2000:2000",
+        )
+
+        script = docker_client.containers.run.call_args.kwargs["command"][2]
+        assert "chown -R 2000:2000 /cache" in script
+
+
+class TestRunCommand:
+    def test_passes_user_to_container(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        runner.run_command(
+            work_dir="work-vol",
+            project_volume="proj-vol",
+            command=["echo", "hi"],
+            image="img",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["user"] == "1000:1000"
+        assert kwargs["environment"]["HOME"] == "/cache"
+
+    def test_custom_default_uid(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client, default_uid="2000:2000")
+
+        runner.run_command(
+            work_dir="work-vol",
+            project_volume="proj-vol",
+            command=["echo", "hi"],
+            image="img",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["user"] == "2000:2000"
+
+    def test_project_volume_mounted_as_cache(self):
+        container = _mock_container()
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        runner.run_command(
+            work_dir="work-vol",
+            project_volume="my-proj-vol",
+            command=["echo", "hi"],
+            image="img",
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert "my-proj-vol" in kwargs["volumes"]
+        assert kwargs["volumes"]["my-proj-vol"]["bind"] == "/cache"
 
 
 class TestEnsureImage:
     def test_pulls_with_pull_token(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_global")
         project = _make_project()
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -418,9 +592,7 @@ class TestEnsureImage:
             Exception("auth failed"),  # pull_token fails
             MagicMock(),  # project token succeeds
         ]
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_global")
         project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -436,9 +608,7 @@ class TestEnsureImage:
             Exception("auth failed"),  # project token fails
             MagicMock(),  # unauthenticated succeeds
         ]
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_global")
         project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -455,9 +625,7 @@ class TestEnsureImage:
             Exception("auth failed"),  # pull_token fails
             MagicMock(),  # unauthenticated succeeds
         ]
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_same"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_same")
         project = _make_project(github_token="ghp_same")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -467,9 +635,7 @@ class TestEnsureImage:
 
     def test_caches_pulled_images(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_global")
         project = _make_project()
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -480,7 +646,7 @@ class TestEnsureImage:
 
     def test_no_pull_token_uses_project_token(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
         project = _make_project(github_token="ghp_project")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -492,7 +658,7 @@ class TestEnsureImage:
 
     def test_uses_project_github_token_field(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
+        runner = DockerRunner(docker_client)
         project = _make_project(github_token="ghp_field")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -504,9 +670,7 @@ class TestEnsureImage:
 
     def test_falls_back_to_global_github_token(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", github_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, github_token="ghp_global")
         project = _make_project(github_token="")
 
         runner.ensure_image("ghcr.io/org/image:latest", project)
@@ -520,9 +684,7 @@ class TestEnsureImage:
         """When all pull attempts fail, ensure_image should not raise."""
         docker_client = _mock_docker_client()
         docker_client.images.pull.side_effect = Exception("denied")
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_global"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_global")
         project = _make_project()
 
         # Should not raise — will try to use local image
@@ -530,13 +692,12 @@ class TestEnsureImage:
 
     def test_run_claude_code_does_not_pull(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_tok"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_tok")
         project = _make_project()
 
         runner.run_claude_code(
             work_dir="/w",
+            project_volume="proj-vol",
             task_prompt="t",
             model="s",
             project=project,
@@ -547,160 +708,14 @@ class TestEnsureImage:
 
     def test_run_hooks_does_not_pull(self):
         docker_client = _mock_docker_client()
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", pull_token="ghp_tok"
-        )
+        runner = DockerRunner(docker_client, pull_token="ghp_tok")
         project = _make_project()
 
         runner.run_hooks(
             work_dir="/w",
+            project_volume="proj-vol",
             commands=["echo hi"],
             project=project,
         )
 
         docker_client.images.pull.assert_not_called()
-
-
-class TestCopyToWorkdir:
-    def test_copies_cache_into_workdir(self):
-        container = _mock_container(exit_code=0, logs=b"copied")
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache")
-
-        result = runner.copy_to_workdir(
-            work_volume="work-vol",
-            cache_subdir="github.com_user_project",
-            image="img:latest",
-        )
-
-        assert result.exit_code == 0
-        assert result.logs == "copied"
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
-        assert kwargs["volumes"]["work-vol"]["mode"] == "rw"
-        assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
-        assert kwargs["volumes"]["my-cache"]["mode"] == "ro"
-        assert kwargs["user"] == "1000:1000"
-        assert kwargs["environment"]["HOME"] == "/workspace/.home"
-
-    def test_command_contains_cache_subdir(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache")
-
-        runner.copy_to_workdir(
-            work_volume="work-vol",
-            cache_subdir="github.com_org_repo",
-            image="img",
-        )
-
-        command = docker_client.containers.run.call_args.kwargs["command"]
-        assert command[0] == "sh"
-        assert command[1] == "-c"
-        assert "github.com_org_repo" in command[2]
-        assert "/workspace/.cache/" in command[2]
-
-
-class TestRunCommand:
-    def test_passes_user_to_container(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
-
-        runner.run_command(
-            work_dir="work-vol",
-            command=["echo", "hi"],
-            image="img",
-        )
-
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["user"] == "1000:1000"
-        assert kwargs["environment"]["HOME"] == "/workspace/.home"
-
-    def test_custom_default_uid(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(
-            docker_client, cache_volume="test-cache", default_uid="2000:2000"
-        )
-
-        runner.run_command(
-            work_dir="work-vol",
-            command=["echo", "hi"],
-            image="img",
-        )
-
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["user"] == "2000:2000"
-
-
-class TestChownVolume:
-    def test_chowns_workspace(self):
-        container = _mock_container(exit_code=0, logs=b"")
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
-
-        result = runner.chown_volume(
-            image="img:latest",
-            work_volume="work-vol",
-            uid="1000:1000",
-        )
-
-        assert result.exit_code == 0
-        kwargs = docker_client.containers.run.call_args.kwargs
-        script = kwargs["command"][2]
-        assert "mkdir -p /workspace/.home" in script
-        assert "chown -R 1000:1000 /workspace" in script
-        assert kwargs["volumes"]["work-vol"]["bind"] == "/workspace"
-        assert "user" not in kwargs  # runs as root
-
-    def test_custom_uid(self):
-        container = _mock_container()
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="test-cache")
-
-        runner.chown_volume(
-            image="img",
-            work_volume="vol",
-            uid="2000:2000",
-        )
-
-        kwargs = docker_client.containers.run.call_args.kwargs
-        script = kwargs["command"][2]
-        assert "chown -R 2000:2000 /workspace" in script
-
-
-class TestChownCacheSubdir:
-    def test_creates_and_chowns_subdir(self):
-        container = _mock_container(exit_code=0, logs=b"")
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache")
-
-        result = runner.chown_cache_subdir(
-            image="img:latest",
-            cache_subdir="github.com_user_repo",
-            uid="1000:1000",
-        )
-
-        assert result.exit_code == 0
-        kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["volumes"]["my-cache"]["bind"] == "/cache"
-        assert "user" not in kwargs  # runs as root
-        script = kwargs["command"][2]
-        # Creates the subdir and chowns it (does not touch /cache root)
-        assert "mkdir -p /cache/github.com_user_repo" in script
-        assert "chown -R 1000:1000 /cache/github.com_user_repo" in script
-        assert "chown 1000:1000 /cache" not in script
-
-    def test_creates_subdir_when_missing(self):
-        """mkdir -p ensures the subdir is created even on a fresh cache volume."""
-        container = _mock_container(exit_code=0, logs=b"")
-        docker_client = _mock_docker_client(container)
-        runner = DockerRunner(docker_client, cache_volume="my-cache")
-
-        runner.chown_cache_subdir(
-            image="img", cache_subdir="nonexistent", uid="1000:1000"
-        )
-
-        script = docker_client.containers.run.call_args.kwargs["command"][2]
-        assert "mkdir -p /cache/nonexistent" in script

@@ -31,6 +31,7 @@ class SummaryGenerator:
         hook_output: str | None = None,
         project: ProjectConfig | None = None,
         work_dir: str | None = None,
+        project_volume: str | None = None,
     ) -> PRMetadata:
         """Generate PR metadata by continuing the Claude Code session with haiku."""
         prompt = self._build_prompt(task, diff, hook_output)
@@ -38,6 +39,7 @@ class SummaryGenerator:
         try:
             result = self.docker_runner.run_claude_code(
                 work_dir=work_dir or "/workspace",
+                project_volume=project_volume or "",
                 task_prompt=prompt,
                 model="haiku",
                 project=project or ProjectConfig(name="_summary", repo=""),
