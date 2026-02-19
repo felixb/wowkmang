@@ -18,10 +18,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version-file: pyproject.toml
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml')
+            }}
       - name: Install dependencies
         run: uv sync --all-extras
       - name: Run pre-commit hooks
-        run: uv run pre-commit run -a
+        run: uv run pre-commit run --show-diff-on-failure --color=always -a
   test:
     runs-on: ubuntu-latest
     steps:
