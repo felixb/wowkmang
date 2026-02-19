@@ -10,7 +10,12 @@ from wowkmang.docker_runner import ContainerResult, DockerRunner
 from wowkmang.github_client import GitHubClient
 from wowkmang.hooks import FixLoop, HookRunner
 from wowkmang.models import Task, TaskResult, TaskStatus, task_from_yaml, task_to_yaml
-from wowkmang.task_queue import complete_task, fail_task, pick_next_task, prune_old_tasks
+from wowkmang.task_queue import (
+    complete_task,
+    fail_task,
+    pick_next_task,
+    prune_old_tasks,
+)
 from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
 
@@ -430,7 +435,10 @@ class Worker:
     def _maybe_prune(self) -> None:
         """Prune old finished tasks at most once per hour."""
         now = datetime.now(timezone.utc)
-        if self._last_prune is not None and (now - self._last_prune).total_seconds() < 3600:
+        if (
+            self._last_prune is not None
+            and (now - self._last_prune).total_seconds() < 3600
+        ):
             return
         self._last_prune = now
         retention = self.config.task_retention_days
