@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -94,3 +95,28 @@ def list_tasks(tasks_dir: Path, status: str | None = None) -> list[Task]:
         for path in sorted(dir_path.glob("*.yaml")):
             tasks.append(task_from_yaml(path.read_text()))
     return tasks
+
+
+def prune_old_tasks(tasks_dir: Path, retention_days: int) -> int:
+    """Delete finished tasks (done/failed) older than retention_days. Returns count deleted."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    deleted = 0
+    for d in (QueueDir.DONE, QueueDir.FAILED):
+        dir_path = tasks_dir / d
+        if not dir_path.exists():
+            continue
+        for path in dir_path.glob("*.yaml"):
+            # Filename format: 2025-02-16T14-32-00_<id>.yaml
+            # Parse the timestamp prefix to avoid reading each YAML file
+            stem = path.stem  # e.g. "2025-02-16T14-32-00_a1b2c3d4"
+            ts_part = stem.split("_")[0]  # "2025-02-16T14-32-00"
+            try:
+                created = datetime.strptime(ts_part, "%Y-%m-%dT%H-%M-%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                continue
+            if created < cutoff:
+                path.unlink()
+                deleted += 1
+    return deleted

@@ -12,6 +12,7 @@ from wowkmang.task_queue import (
     get_task,
     list_tasks,
     pick_next_task,
+    prune_old_tasks,
     save_task,
 )
 
@@ -133,3 +134,87 @@ class TestListTasks:
         assert len(list_tasks(tmp_tasks_dir, status="pending")) == 1
         assert len(list_tasks(tmp_tasks_dir, status="running")) == 1
         assert len(list_tasks(tmp_tasks_dir, status="done")) == 0
+
+
+class TestPruneOldTasks:
+    def _finish_task(self, tasks_dir, task, *, done: bool = True):
+        save_task(tasks_dir, task)
+        path, picked = pick_next_task(tasks_dir)
+        picked.result = TaskResult(
+            status=TaskStatus.COMPLETED if done else TaskStatus.FAILED,
+            error=None if done else "error",
+        )
+        if done:
+            complete_task(tasks_dir, path, picked)
+        else:
+            fail_task(tasks_dir, path, picked)
+
+    def test_prune_old_done_task(self, tmp_tasks_dir):
+        from datetime import datetime, timezone, timedelta
+
+        old_task = _make_task(
+            id="old11111",
+            created=datetime.now(timezone.utc) - timedelta(days=8),
+        )
+        self._finish_task(tmp_tasks_dir, old_task, done=True)
+        deleted = prune_old_tasks(tmp_tasks_dir, retention_days=7)
+        assert deleted == 1
+        assert not list(tmp_tasks_dir.joinpath("done").glob("*.yaml"))
+
+    def test_prune_old_failed_task(self, tmp_tasks_dir):
+        from datetime import datetime, timezone, timedelta
+
+        old_task = _make_task(
+            id="oldf1111",
+            created=datetime.now(timezone.utc) - timedelta(days=10),
+        )
+        self._finish_task(tmp_tasks_dir, old_task, done=False)
+        deleted = prune_old_tasks(tmp_tasks_dir, retention_days=7)
+        assert deleted == 1
+        assert not list(tmp_tasks_dir.joinpath("failed").glob("*.yaml"))
+
+    def test_keep_recent_task(self, tmp_tasks_dir):
+        from datetime import datetime, timezone, timedelta
+
+        recent_task = _make_task(
+            id="new11111",
+            created=datetime.now(timezone.utc) - timedelta(days=3),
+        )
+        self._finish_task(tmp_tasks_dir, recent_task, done=True)
+        deleted = prune_old_tasks(tmp_tasks_dir, retention_days=7)
+        assert deleted == 0
+        assert list(tmp_tasks_dir.joinpath("done").glob("*.yaml"))
+
+    def test_prune_mixed(self, tmp_tasks_dir):
+        from datetime import datetime, timezone, timedelta
+
+        old_task = _make_task(
+            id="old11111",
+            created=datetime.now(timezone.utc) - timedelta(days=8),
+        )
+        recent_task = _make_task(
+            id="new11111",
+            created=datetime.now(timezone.utc) - timedelta(days=2),
+        )
+        self._finish_task(tmp_tasks_dir, old_task, done=True)
+        self._finish_task(tmp_tasks_dir, recent_task, done=True)
+        deleted = prune_old_tasks(tmp_tasks_dir, retention_days=7)
+        assert deleted == 1
+        remaining = list(tmp_tasks_dir.joinpath("done").glob("*.yaml"))
+        assert len(remaining) == 1
+        assert "new11111" in remaining[0].name
+
+    def test_does_not_prune_pending_or_running(self, tmp_tasks_dir):
+        from datetime import datetime, timezone, timedelta
+
+        old_pending = _make_task(
+            id="pend1111",
+            created=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+        save_task(tmp_tasks_dir, old_pending)
+        deleted = prune_old_tasks(tmp_tasks_dir, retention_days=7)
+        assert deleted == 0
+        assert list(tmp_tasks_dir.joinpath("pending").glob("*.yaml"))
+
+    def test_returns_zero_when_empty(self, tmp_tasks_dir):
+        assert prune_old_tasks(tmp_tasks_dir, retention_days=7) == 0

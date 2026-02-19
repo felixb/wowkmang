@@ -19,6 +19,7 @@ class GlobalConfig(BaseSettings):
     pull_token: str = ""
     github_token: str = ""
     keep_workdir: bool = False
+    task_retention_days: int = 7
     container_uid: str = "1000:1000"
     git_name: str = "wowkmang"
     git_email: str = "wowkmang@noreply"

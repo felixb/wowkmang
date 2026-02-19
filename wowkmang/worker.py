@@ -10,7 +10,7 @@ from wowkmang.docker_runner import ContainerResult, DockerRunner
 from wowkmang.github_client import GitHubClient
 from wowkmang.hooks import FixLoop, HookRunner
 from wowkmang.models import Task, TaskResult, TaskStatus, task_from_yaml, task_to_yaml
-from wowkmang.task_queue import complete_task, fail_task, pick_next_task
+from wowkmang.task_queue import complete_task, fail_task, pick_next_task, prune_old_tasks
 from wowkmang.repo_cache import RepoCache
 from wowkmang.summary import SummaryGenerator
 
@@ -43,6 +43,7 @@ class Worker:
         self._status = WorkerStatus.IDLE
         self._running = False
         self._thread: threading.Thread | None = None
+        self._last_prune: datetime | None = None
 
     @property
     def status(self) -> str:
@@ -78,6 +79,7 @@ class Worker:
                 finally:
                     self._status = WorkerStatus.IDLE
             else:
+                self._maybe_prune()
                 time.sleep(5)
 
     def _process_task(self, task_file, task: Task) -> None:
@@ -424,6 +426,17 @@ class Worker:
         )
         # exit code 0 = no diff, 1 = has changes
         return result.exit_code != 0
+
+    def _maybe_prune(self) -> None:
+        """Prune old finished tasks at most once per hour."""
+        now = datetime.now(timezone.utc)
+        if self._last_prune is not None and (now - self._last_prune).total_seconds() < 3600:
+            return
+        self._last_prune = now
+        retention = self.config.task_retention_days
+        deleted = prune_old_tasks(self.config.tasks_dir, retention)
+        if deleted:
+            logger.info("Pruned %d task(s) older than %d day(s)", deleted, retention)
 
     def _recover_stale_tasks(self) -> None:
         """Kill orphaned containers and move running tasks back to pending or failed."""
