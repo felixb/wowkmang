@@ -7,6 +7,7 @@ on:
     branches: [main]
 jobs:
   filter:
+    name: Detect changed files
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -25,6 +26,7 @@ jobs:
               - '.dockerignore'
               - '.github/workflows/build.yaml'
   pre-commit:
+    name: Check pre-commit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +48,7 @@ jobs:
       - name: Run pre-commit hooks
         run: uv run pre-commit run --show-diff-on-failure --color=always -a
   test:
+    name: Run pytest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
