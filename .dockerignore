@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 
 .git/
+.github/
 .gitignore
 .idea/
 .claude/
@@ -13,7 +14,15 @@ __pycache__/
 docs/
 *.md
 
-/projects
-/data
+/http
+*.http
+
 /cache
+/data
+/docker-compose.yaml
+/example
+/images
+/projects
+/scripts
 /tasks
+/tests
