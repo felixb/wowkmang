@@ -8,6 +8,8 @@ on:
 jobs:
   filter:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     outputs:
       docker: ${{ steps.filter.outputs.docker }}
     steps:
