@@ -17,7 +17,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI
-ENV CLAUDE_CODE_VERSION=2.1.47
+ENV CLAUDE_CODE_VERSION=2.1.49
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Add GitHub SSH host keys
