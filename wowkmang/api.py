@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         pull_token=config.pull_token,
         github_token=config.github_token,
         default_uid=config.container_uid,
+        default_docker_image=config.docker_image,
     )
     repo_cache = RepoCache(docker_runner=docker_runner)
     hook_runner = HookRunner(docker_runner)

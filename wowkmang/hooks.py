@@ -32,7 +32,7 @@ class HookRunner:
             work_dir=work_dir,
             project_volume=project_volume,
             command="test -f .pre-commit-config.yaml",
-            image=project.docker_image,
+            image=self.docker_runner.resolve_image(project),
             environment={
                 "GITHUB_TOKEN": project.github_token or self.docker_runner.github_token
             },
@@ -69,7 +69,7 @@ class HookRunner:
             work_dir=work_dir,
             project_volume=project_volume,
             command=["git", "add", "-A"],
-            image=project.docker_image,
+            image=self.docker_runner.resolve_image(project),
         )
 
     def run_hooks(

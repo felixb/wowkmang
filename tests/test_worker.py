@@ -339,7 +339,7 @@ class TestProcessTask:
         setup["worker"]._process_task(task_file, task)
 
         setup["docker_runner"].ensure_image.assert_called_once_with(
-            setup["project"].docker_image, setup["project"]
+            setup["docker_runner"].resolve_image.return_value, setup["project"]
         )
 
     @_patch_github

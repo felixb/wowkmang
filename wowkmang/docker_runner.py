@@ -23,12 +23,18 @@ class DockerRunner:
         pull_token: str = "",
         github_token: str = "",
         default_uid: str = "1000:1000",
+        default_docker_image: str = "",
     ):
         self.client = docker_client
         self.pull_token = pull_token
         self.github_token = github_token
         self.default_uid = default_uid
+        self.default_docker_image = default_docker_image
         self._pulled_images: set[str] = set()
+
+    def resolve_image(self, project: ProjectConfig) -> str:
+        """Return the Docker image to use: project-specific if set, else global default."""
+        return project.docker_image or self.default_docker_image
 
     def ensure_image(self, image: str, project: ProjectConfig) -> None:
         """Pull a Docker image, trying multiple auth strategies.
@@ -219,7 +225,7 @@ class DockerRunner:
             work_dir=work_dir,
             project_volume=project_volume,
             command=command,
-            image=project.docker_image,
+            image=self.resolve_image(project),
             environment=environment,
             timeout_seconds=timeout_minutes * 60,
         )
@@ -238,7 +244,7 @@ class DockerRunner:
                 work_dir=work_dir,
                 project_volume=project_volume,
                 command=cmd,
-                image=project.docker_image,
+                image=self.resolve_image(project),
                 environment={"GITHUB_TOKEN": project.github_token or self.github_token},
                 timeout_seconds=project.timeout_minutes * 60,
             )
