@@ -170,4 +170,4 @@ uv run uvicorn wowkmang.api:app --reload   # dev server
 
 ## License
 
-GPL-3.0 — see [COPYING](COPYING).
+GPL-3.0 — see [COPYING](LICENSE).
