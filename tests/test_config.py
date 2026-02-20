@@ -15,6 +15,7 @@ class TestGlobalConfig:
         assert config.host == "0.0.0.0"
         assert config.port == 8484
         assert config.container_uid == "1000:1000"
+        assert config.docker_image == "ghcr.io/anthropics/claude-code:latest"
 
     def test_custom_values(self):
         config = GlobalConfig(
@@ -32,6 +33,7 @@ class TestProjectConfig:
         assert p.timeout_minutes == 30
         assert p.github_labels.trigger == "wowkmang"
         assert p.container_uid == ""
+        assert p.docker_image == ""
 
     def test_full_config(self):
         p = ProjectConfig(

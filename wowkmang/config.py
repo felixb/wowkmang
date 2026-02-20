@@ -21,6 +21,7 @@ class GlobalConfig(BaseSettings):
     keep_workdir: bool = False
     task_retention_days: int = 7
     container_uid: str = "1000:1000"
+    docker_image: str = "ghcr.io/anthropics/claude-code:latest"
     git_name: str = "wowkmang"
     git_email: str = "wowkmang@noreply"
 
@@ -42,7 +43,7 @@ class ProjectConfig(BaseModel):
     git_email: str = ""
     default_model: str = "sonnet"
     extra_instructions: str = ""
-    docker_image: str = "ghcr.io/anthropics/claude-code:latest"
+    docker_image: str = ""
     timeout_minutes: int = 30
     max_fix_attempts: int = 2
     pre_task: list[str] = Field(default_factory=list)

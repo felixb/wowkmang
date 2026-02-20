@@ -49,7 +49,7 @@ class TestRunClaudeCode:
 
         docker_client.containers.run.assert_called_once()
         kwargs = docker_client.containers.run.call_args.kwargs
-        assert kwargs["image"] == project.docker_image
+        assert kwargs["image"] == runner.resolve_image(project)
         assert kwargs["working_dir"] == "/workspace/repo"
         assert kwargs["detach"] is True
         assert kwargs["mem_limit"] == "4g"
@@ -571,6 +571,64 @@ class TestRunCommand:
         kwargs = docker_client.containers.run.call_args.kwargs
         assert "my-proj-vol" in kwargs["volumes"]
         assert kwargs["volumes"]["my-proj-vol"]["bind"] == "/cache"
+
+
+class TestResolveImage:
+    def test_uses_project_image_when_set(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(
+            docker_client, default_docker_image="ghcr.io/global/image:latest"
+        )
+        project = _make_project(docker_image="ghcr.io/project/image:v2")
+
+        assert runner.resolve_image(project) == "ghcr.io/project/image:v2"
+
+    def test_falls_back_to_default_when_project_image_empty(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(
+            docker_client, default_docker_image="ghcr.io/global/image:latest"
+        )
+        project = _make_project()  # docker_image="" by default
+
+        assert runner.resolve_image(project) == "ghcr.io/global/image:latest"
+
+    def test_run_claude_code_uses_resolved_image(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(
+            docker_client, default_docker_image="ghcr.io/global/image:latest"
+        )
+        project = _make_project()  # no docker_image set
+
+        runner.run_claude_code(
+            work_dir="work-vol",
+            project_volume="proj-vol",
+            task_prompt="do stuff",
+            model="sonnet",
+            project=project,
+            timeout_minutes=30,
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["image"] == "ghcr.io/global/image:latest"
+
+    def test_run_claude_code_uses_project_image_over_default(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(
+            docker_client, default_docker_image="ghcr.io/global/image:latest"
+        )
+        project = _make_project(docker_image="ghcr.io/project/custom:v1")
+
+        runner.run_claude_code(
+            work_dir="work-vol",
+            project_volume="proj-vol",
+            task_prompt="do stuff",
+            model="sonnet",
+            project=project,
+            timeout_minutes=30,
+        )
+
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["image"] == "ghcr.io/project/custom:v1"
 
 
 class TestEnsureImage:

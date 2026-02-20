@@ -176,7 +176,7 @@ class Worker:
         start_time: datetime,
     ) -> None:
         github_token = project.github_token or self.config.github_token
-        image = project.docker_image
+        image = self.docker_runner.resolve_image(project)
 
         # Pull image once for the entire task
         self.docker_runner.ensure_image(image, project)
