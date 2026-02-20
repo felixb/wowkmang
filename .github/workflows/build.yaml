@@ -10,6 +10,7 @@ jobs:
     name: Detect changed files
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       docker: ${{ steps.filter.outputs.docker }}
@@ -29,6 +30,8 @@ jobs:
   pre-commit:
     name: Check pre-commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -51,6 +54,8 @@ jobs:
   test:
     name: Run pytest
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
