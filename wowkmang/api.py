@@ -33,6 +33,16 @@ worker: Worker | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global projects, authenticator, worker
+    log_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    log_format = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+    formatter = logging.Formatter(log_format)
+    for name in (None, "uvicorn", "uvicorn.access", "uvicorn.error"):
+        lg = logging.getLogger(name)
+        lg.setLevel(log_level)
+        for handler in lg.handlers:
+            handler.setFormatter(formatter)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(format=log_format, level=log_level)
     ensure_queue_dirs(config.tasks_dir)
     projects = load_projects(config.projects_dir)
     authenticator = Authenticator(config, projects)

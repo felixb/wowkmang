@@ -253,6 +253,24 @@ class DockerRunner:
 
         return last_result
 
+    def read_file(
+        self,
+        volume: str,
+        path: str,
+        image: str,
+        mount_point: str = "/mnt",
+    ) -> str:
+        """Read a file from a Docker volume via a short-lived container."""
+        result = self._run_container(
+            image=image,
+            command=["cat", f"{mount_point}/{path}"],
+            environment={},
+            volumes={volume: {"bind": mount_point, "mode": "ro"}},
+            timeout_seconds=30,
+            working_dir="/",
+        )
+        return result.logs if result.exit_code == 0 else ""
+
     def kill_stale_containers(self) -> None:
         """Find and kill any orphaned wowkmang containers and volumes."""
         containers = self.client.containers.list(

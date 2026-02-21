@@ -161,6 +161,14 @@ class Worker:
             )
             self._fail_task(task_file, task)
         finally:
+            image = self.docker_runner.resolve_image(
+                self.projects.get(task.project)
+                or ProjectConfig(name=task.project, repo=task.repo)
+            )
+            logs = self._collect_logs(work_volume, project_volume, image)
+            if task.result and logs:
+                task.result.logs = logs
+                self._save_task_result(task)
             if self.config.keep_workdir:
                 logger.info("Keeping work volume for inspection: %s", work_volume)
             else:
@@ -442,7 +450,7 @@ class Worker:
         image: str,
     ) -> None:
         """Log step output at DEBUG level and append to .wowkmang/steps.log."""
-        logger.debug(
+        logger.info(
             "Step [%s] exit_code=%d\n%s", step_name, result.exit_code, result.logs
         )
         log_entry = (
@@ -458,6 +466,26 @@ class Worker:
             ],
             image=image,
         )
+
+    def _collect_logs(self, work_volume: str, project_volume: str, image: str) -> str:
+        """Read steps.log from the work volume."""
+        try:
+            return self.docker_runner.read_file(
+                volume=work_volume,
+                path=".wowkmang/steps.log",
+                image=image,
+                mount_point="/workspace",
+            )
+        except Exception:
+            logger.debug("Could not collect steps.log from %s", work_volume)
+            return ""
+
+    def _save_task_result(self, task: Task) -> None:
+        """Re-save task file after updating result (e.g. adding logs)."""
+        for subdir in ("done", "failed", "running", "pending"):
+            for path in (self.config.tasks_dir / subdir).glob(f"*_{task.id}.yaml"):
+                path.write_text(task_to_yaml(task))
+                return
 
     def _has_changes(
         self, work_volume: str, project_volume: str, ref: str, image: str

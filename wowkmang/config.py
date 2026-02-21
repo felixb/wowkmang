@@ -22,6 +22,7 @@ class GlobalConfig(BaseSettings):
     task_retention_days: int = 7
     container_uid: str = "1000:1000"
     docker_image: str = "ghcr.io/anthropics/claude-code:latest"
+    log_level: str = "info"
     git_name: str = "wowkmang"
     git_email: str = "wowkmang@noreply"
 

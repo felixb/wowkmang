@@ -39,6 +39,7 @@ class TaskResult(BaseModel):
     post_task_passed: Optional[bool] = None
     fix_attempts: Optional[int] = None
     error: Optional[str] = None
+    logs: Optional[str] = None
 
 
 class Task(BaseModel):

@@ -64,6 +64,7 @@ def setup(tmp_path):
         exit_code=0, logs=""
     )
     docker_runner.seed_credentials.return_value = ContainerResult(exit_code=0, logs="")
+    docker_runner.read_file.return_value = ""
 
     def _run_command_side_effect(**kwargs):
         command = kwargs.get("command", "")
@@ -869,6 +870,89 @@ class TestHasAnyChanges:
         docker_runner.run_command.return_value = ContainerResult(exit_code=0, logs="")
         worker = self._make_worker(tmp_path, docker_runner)
         assert worker._has_any_changes("vol", "proj-vol", "main", "img") is False
+
+
+class TestCollectLogs:
+    def _make_worker(self, tmp_path, docker_runner):
+        config = _make_config(tmp_path)
+        ensure_queue_dirs(config.tasks_dir)
+        return Worker(
+            config=config,
+            projects={},
+            docker_runner=docker_runner,
+            repo_cache=MagicMock(),
+            hook_runner=MagicMock(),
+            fix_loop=MagicMock(),
+            summary_generator=MagicMock(),
+        )
+
+    def test_collect_logs_reads_steps_log(self, tmp_path):
+        docker_runner = MagicMock()
+        docker_runner.read_file.return_value = "=== claude_code ===\noutput\n"
+        worker = self._make_worker(tmp_path, docker_runner)
+
+        result = worker._collect_logs("work-vol", "proj-vol", "img:latest")
+
+        assert result == "=== claude_code ===\noutput\n"
+        docker_runner.read_file.assert_called_once_with(
+            volume="work-vol",
+            path=".wowkmang/steps.log",
+            image="img:latest",
+            mount_point="/workspace",
+        )
+
+    def test_collect_logs_returns_empty_on_error(self, tmp_path):
+        docker_runner = MagicMock()
+        docker_runner.read_file.side_effect = RuntimeError("container failed")
+        worker = self._make_worker(tmp_path, docker_runner)
+
+        result = worker._collect_logs("work-vol", "proj-vol", "img")
+
+        assert result == ""
+
+
+class TestLogsInTaskResult:
+    @patch("wowkmang.worker.GitHubClient")
+    def test_success_path_includes_logs(self, MockGH, setup):
+        mock_gh = MagicMock()
+        mock_gh.create_pr.return_value = {
+            "number": 100,
+            "html_url": "https://github.com/user/project/pull/100",
+        }
+        MockGH.return_value = mock_gh
+
+        setup["docker_runner"].read_file.return_value = "=== steps ===\nlog content\n"
+
+        task = _make_task()
+        task_file, task = _save_and_pick(setup["config"], task)
+
+        setup["worker"]._process_task(task_file, task)
+
+        done_files = list((setup["config"].tasks_dir / "done").glob("*.yaml"))
+        assert len(done_files) == 1
+        from wowkmang.models import task_from_yaml
+
+        saved = task_from_yaml(done_files[0].read_text())
+        assert saved.result.logs == "=== steps ===\nlog content\n"
+
+    @patch("wowkmang.worker.GitHubClient")
+    def test_failure_path_includes_logs(self, MockGH, setup):
+        setup["docker_runner"].run_claude_code.return_value = ContainerResult(
+            exit_code=1, logs="error output"
+        )
+        setup["docker_runner"].read_file.return_value = "=== claude_code ===\nfailed\n"
+
+        task = _make_task()
+        task_file, task = _save_and_pick(setup["config"], task)
+
+        setup["worker"]._process_task(task_file, task)
+
+        failed_files = list((setup["config"].tasks_dir / "failed").glob("*.yaml"))
+        assert len(failed_files) == 1
+        from wowkmang.models import task_from_yaml
+
+        saved = task_from_yaml(failed_files[0].read_text())
+        assert saved.result.logs == "=== claude_code ===\nfailed\n"
 
 
 class TestHasChanges:
