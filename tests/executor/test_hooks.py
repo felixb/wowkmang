@@ -2,10 +2,10 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from wowkmang.config import ProjectConfig
-from wowkmang.docker_runner import ContainerResult
-from wowkmang.hooks import HookResult, HookRunner, HookType
-from wowkmang.models import Task, TaskSource, TaskSourceInfo
+from wowkmang.api.config import ProjectConfig
+from wowkmang.executor.docker_runner import ContainerResult
+from wowkmang.executor.hooks import HookResult, HookRunner, HookType
+from wowkmang.taskqueue.models import Task, TaskSource, TaskSourceInfo
 
 
 def _make_project(**overrides) -> ProjectConfig:

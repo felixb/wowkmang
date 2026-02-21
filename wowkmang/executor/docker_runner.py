@@ -3,7 +3,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from wowkmang.config import ProjectConfig
+from wowkmang.api.config import ProjectConfig
 
 logger = logging.getLogger(__name__)
 

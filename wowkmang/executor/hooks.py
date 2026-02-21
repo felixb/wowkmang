@@ -2,8 +2,8 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from wowkmang.config import ProjectConfig
-from wowkmang.docker_runner import DockerRunner
+from wowkmang.api.config import ProjectConfig
+from wowkmang.executor.docker_runner import DockerRunner
 
 
 class HookResult(BaseModel):

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
-from wowkmang.models import Task, TaskStatus, task_from_yaml, task_to_yaml
+from wowkmang.taskqueue.models import Task, TaskStatus, task_from_yaml, task_to_yaml
 
 
 class QueueDir(str, Enum):

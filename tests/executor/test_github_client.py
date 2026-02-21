@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from wowkmang.github_client import GitHubClient
+from wowkmang.executor.github_client import GitHubClient
 
 BASE_URL = "https://api.github.com/repos/user/project"
 

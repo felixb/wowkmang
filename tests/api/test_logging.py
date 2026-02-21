@@ -2,7 +2,7 @@ import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
-from wowkmang.config import GlobalConfig
+from wowkmang.api.config import GlobalConfig
 
 
 class TestLogLevelConfig:
@@ -22,21 +22,21 @@ class TestLogLevelConfig:
 class TestLoggingSetup:
     def _run_lifespan(self, log_level="debug"):
         with (
-            patch("wowkmang.api.config", GlobalConfig(log_level=log_level)),
-            patch("wowkmang.api.ensure_queue_dirs"),
-            patch("wowkmang.api.load_projects", return_value={}),
-            patch("wowkmang.api.Authenticator"),
-            patch("wowkmang.api.docker.from_env"),
-            patch("wowkmang.api.DockerRunner"),
-            patch("wowkmang.api.RepoCache"),
-            patch("wowkmang.api.HookRunner"),
-            patch("wowkmang.api.FixLoop"),
-            patch("wowkmang.api.SummaryGenerator"),
-            patch("wowkmang.api.Worker") as MockWorker,
+            patch("wowkmang.api.routes.config", GlobalConfig(log_level=log_level)),
+            patch("wowkmang.api.routes.ensure_queue_dirs"),
+            patch("wowkmang.api.routes.load_projects", return_value={}),
+            patch("wowkmang.api.routes.Authenticator"),
+            patch("wowkmang.api.routes.docker.from_env"),
+            patch("wowkmang.api.routes.DockerRunner"),
+            patch("wowkmang.api.routes.RepoCache"),
+            patch("wowkmang.api.routes.HookRunner"),
+            patch("wowkmang.api.routes.FixLoop"),
+            patch("wowkmang.api.routes.SummaryGenerator"),
+            patch("wowkmang.api.routes.Worker") as MockWorker,
         ):
             MockWorker.return_value = MagicMock()
 
-            from wowkmang.api import lifespan
+            from wowkmang.api.routes import lifespan
 
             async def run():
                 async with lifespan(MagicMock()):

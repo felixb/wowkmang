@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wowkmang.config import ProjectConfig
-from wowkmang.docker_runner import ContainerResult
-from wowkmang.models import Task, TaskSource, TaskSourceInfo
-from wowkmang.summary import (
+from wowkmang.api.config import ProjectConfig
+from wowkmang.executor.docker_runner import ContainerResult
+from wowkmang.taskqueue.models import Task, TaskSource, TaskSourceInfo
+from wowkmang.executor.summary import (
     PRMetadata,
     SummaryGenerator,
     _extract_yaml,

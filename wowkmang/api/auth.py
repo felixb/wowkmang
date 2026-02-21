@@ -4,7 +4,7 @@ import sys
 
 from fastapi import HTTPException, Request
 
-from wowkmang.config import GlobalConfig, find_project_by_repo, ProjectConfig
+from wowkmang.api.config import GlobalConfig, find_project_by_repo, ProjectConfig
 
 
 def hash_token(token: str) -> str:

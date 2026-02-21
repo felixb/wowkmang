@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from wowkmang.models import (
+from wowkmang.taskqueue.models import (
     Task,
     TaskResult,
     TaskSource,

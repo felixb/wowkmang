@@ -5,19 +5,25 @@ import time
 from datetime import datetime, timezone
 from enum import Enum
 
-from wowkmang.config import GlobalConfig, ProjectConfig
-from wowkmang.docker_runner import ContainerResult, DockerRunner
-from wowkmang.github_client import GitHubClient
-from wowkmang.hooks import HookResult, HookRunner, HookType
-from wowkmang.models import Task, TaskResult, TaskStatus, task_from_yaml, task_to_yaml
-from wowkmang.task_queue import (
+from wowkmang.api.config import GlobalConfig, ProjectConfig
+from wowkmang.executor.docker_runner import ContainerResult, DockerRunner
+from wowkmang.executor.github_client import GitHubClient
+from wowkmang.executor.hooks import HookResult, HookRunner, HookType
+from wowkmang.taskqueue.models import (
+    Task,
+    TaskResult,
+    TaskStatus,
+    task_from_yaml,
+    task_to_yaml,
+)
+from wowkmang.taskqueue.task_queue import (
     complete_task,
     fail_task,
     pick_next_task,
     prune_old_tasks,
 )
-from wowkmang.repo_cache import RepoCache
-from wowkmang.summary import SummaryGenerator
+from wowkmang.executor.repo_cache import RepoCache
+from wowkmang.executor.summary import SummaryGenerator
 
 logger = logging.getLogger(__name__)
 

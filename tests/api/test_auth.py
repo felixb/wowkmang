@@ -1,7 +1,7 @@
 import hashlib
 import hmac as hmac_mod
 
-from wowkmang.auth import hash_token, verify_api_token, verify_github_signature
+from wowkmang.api.auth import hash_token, verify_api_token, verify_github_signature
 
 
 class TestHashToken:

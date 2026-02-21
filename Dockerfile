@@ -18,4 +18,4 @@ EXPOSE 8484
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -sf http://localhost:8484/health
 
-CMD ["uv", "run", "uvicorn", "wowkmang.api:app", "--host", "0.0.0.0", "--port", "8484"]
+CMD ["uv", "run", "uvicorn", "wowkmang:app", "--host", "0.0.0.0", "--port", "8484"]

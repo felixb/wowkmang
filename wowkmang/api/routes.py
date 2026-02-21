@@ -7,20 +7,25 @@ import docker
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from wowkmang.auth import Authenticator, verify_github_signature
-from wowkmang.config import (
+from wowkmang.api.auth import Authenticator, verify_github_signature
+from wowkmang.api.config import (
     GlobalConfig,
     find_project_by_repo,
     load_projects,
     ProjectConfig,
 )
-from wowkmang.docker_runner import DockerRunner
-from wowkmang.hooks import HookRunner
-from wowkmang.models import Task, TaskSource, TaskSourceInfo
-from wowkmang.task_queue import ensure_queue_dirs, get_task, list_tasks, save_task
-from wowkmang.repo_cache import RepoCache
-from wowkmang.summary import SummaryGenerator
-from wowkmang.worker import FixLoop, Worker
+from wowkmang.executor.docker_runner import DockerRunner
+from wowkmang.executor.hooks import HookRunner
+from wowkmang.taskqueue.models import Task, TaskSource, TaskSourceInfo
+from wowkmang.taskqueue.task_queue import (
+    ensure_queue_dirs,
+    get_task,
+    list_tasks,
+    save_task,
+)
+from wowkmang.executor.repo_cache import RepoCache
+from wowkmang.executor.summary import SummaryGenerator
+from wowkmang.executor.worker import FixLoop, Worker
 
 logger = logging.getLogger(__name__)
 

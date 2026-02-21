@@ -1,7 +1,7 @@
 import uuid
 from urllib.parse import urlparse, urlunparse
 
-from wowkmang.docker_runner import DockerRunner
+from wowkmang.executor.docker_runner import DockerRunner
 
 
 class RepoCache:

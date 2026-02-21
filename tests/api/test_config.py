@@ -1,6 +1,6 @@
 import yaml
 
-from wowkmang.config import (
+from wowkmang.api.config import (
     GlobalConfig,
     GitHubLabels,
     ProjectConfig,

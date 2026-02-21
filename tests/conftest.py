@@ -1,8 +1,8 @@
 import pytest
 import yaml
 
-from wowkmang.auth import hash_token
-from wowkmang.config import GlobalConfig
+from wowkmang.api.auth import hash_token
+from wowkmang.api.config import GlobalConfig
 
 SAMPLE_PROJECT = {
     "name": "testproject",

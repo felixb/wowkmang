@@ -1,11 +1,11 @@
-from wowkmang.models import (
+from wowkmang.taskqueue.models import (
     Task,
     TaskResult,
     TaskSource,
     TaskSourceInfo,
     TaskStatus,
 )
-from wowkmang.task_queue import (
+from wowkmang.taskqueue.task_queue import (
     complete_task,
     ensure_queue_dirs,
     fail_task,

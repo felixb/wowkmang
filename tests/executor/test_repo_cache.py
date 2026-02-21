@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from wowkmang.docker_runner import ContainerResult
-from wowkmang.repo_cache import RepoCache
+from wowkmang.executor.docker_runner import ContainerResult
+from wowkmang.executor.repo_cache import RepoCache
 
 
 def _mock_docker_runner(exit_code: int = 0, logs: str = ""):

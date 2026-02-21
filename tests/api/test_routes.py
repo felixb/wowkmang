@@ -6,17 +6,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import SAMPLE_PROJECT, TEST_API_TOKEN, TEST_API_TOKEN_HASH
-from wowkmang.api import app, config, projects, authenticator
-import wowkmang.api as api_module
-from wowkmang.config import load_projects, GlobalConfig
-from wowkmang.task_queue import ensure_queue_dirs
+from wowkmang.api.routes import app, config, projects, authenticator
+import wowkmang.api.routes as api_module
+from wowkmang.api.config import load_projects, GlobalConfig
+from wowkmang.taskqueue.task_queue import ensure_queue_dirs
 
 
 @pytest.fixture(autouse=True)
 def setup_api(global_config, tmp_projects_dir, tmp_tasks_dir):
     api_module.config = global_config
     api_module.projects = load_projects(tmp_projects_dir)
-    from wowkmang.auth import Authenticator
+    from wowkmang.api.auth import Authenticator
 
     api_module.authenticator = Authenticator(global_config, api_module.projects)
     ensure_queue_dirs(global_config.tasks_dir)

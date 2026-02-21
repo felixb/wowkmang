@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wowkmang.config import ProjectConfig
-from wowkmang.docker_runner import ContainerResult, DockerRunner
+from wowkmang.api.config import ProjectConfig
+from wowkmang.executor.docker_runner import ContainerResult, DockerRunner
 
 
 def _make_project(**overrides) -> ProjectConfig:

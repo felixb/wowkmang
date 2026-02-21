@@ -4,13 +4,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wowkmang.config import GlobalConfig, ProjectConfig
-from wowkmang.docker_runner import ContainerResult
-from wowkmang.hooks import HookResult, HookRunner, HookType
-from wowkmang.models import Task, TaskSource, TaskSourceInfo, TaskStatus, task_to_yaml
-from wowkmang.task_queue import ensure_queue_dirs, save_task
-from wowkmang.summary import PRMetadata
-from wowkmang.worker import FixLoop, Worker
+from wowkmang.api.config import GlobalConfig, ProjectConfig
+from wowkmang.executor.docker_runner import ContainerResult
+from wowkmang.executor.hooks import HookResult, HookRunner, HookType
+from wowkmang.taskqueue.models import (
+    Task,
+    TaskSource,
+    TaskSourceInfo,
+    TaskStatus,
+    task_to_yaml,
+)
+from wowkmang.taskqueue.task_queue import ensure_queue_dirs, save_task
+from wowkmang.executor.summary import PRMetadata
+from wowkmang.executor.worker import FixLoop, Worker
 
 
 def _make_project(**overrides) -> ProjectConfig:
@@ -122,7 +128,7 @@ def setup(tmp_path):
 
 def _save_and_pick(config, task):
     """Save a task and move it to running (simulating pick_next_task)."""
-    from wowkmang.task_queue import pick_next_task
+    from wowkmang.taskqueue.task_queue import pick_next_task
 
     save_task(config.tasks_dir, task)
     result = pick_next_task(config.tasks_dir)
@@ -133,7 +139,7 @@ def _save_and_pick(config, task):
 def _patch_github(func):
     """Decorator to patch GitHubClient in worker tests."""
 
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def wrapper(self, MockGH, setup):
         return func(self, MockGH, setup)
 
@@ -359,7 +365,7 @@ class TestProcessTask:
 
 
 class TestErrorMessages:
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_pipeline_exception_recorded_in_task(self, MockGH, setup):
         mock_gh = MagicMock()
         mock_gh.create_pr.side_effect = RuntimeError("branch has no new commits")
@@ -377,7 +383,7 @@ class TestErrorMessages:
 
 
 class TestKeepWorkdir:
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_workdir_deleted_by_default(self, MockGH, setup):
         mock_gh = MagicMock()
         mock_gh.create_pr.return_value = {"number": 1, "html_url": "url"}
@@ -393,7 +399,7 @@ class TestKeepWorkdir:
         volume_names = [str(c.args[0]) for c in remove_calls]
         assert any("work" in v for v in volume_names)
 
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_workdir_preserved_when_keep_workdir(self, MockGH, setup):
         setup["config"].keep_workdir = True
         setup["worker"].config = setup["config"]
@@ -412,7 +418,7 @@ class TestKeepWorkdir:
         volume_names = [str(c.args[0]) for c in remove_calls]
         assert not any("work" in v for v in volume_names)
 
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_project_volume_never_deleted(self, MockGH, setup):
         """Project volume should never be passed to remove_volume."""
         mock_gh = MagicMock()
@@ -705,7 +711,7 @@ class TestExtractRepo:
 
 
 class TestNoChanges:
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_no_diff_skips_push_and_pr(self, MockGH, setup):
         """When _has_any_changes returns False, skip push/PR and complete with note."""
 
@@ -912,7 +918,7 @@ class TestCollectLogs:
 
 
 class TestLogsInTaskResult:
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_success_path_includes_logs(self, MockGH, setup):
         mock_gh = MagicMock()
         mock_gh.create_pr.return_value = {
@@ -930,12 +936,12 @@ class TestLogsInTaskResult:
 
         done_files = list((setup["config"].tasks_dir / "done").glob("*.yaml"))
         assert len(done_files) == 1
-        from wowkmang.models import task_from_yaml
+        from wowkmang.taskqueue.models import task_from_yaml
 
         saved = task_from_yaml(done_files[0].read_text())
         assert saved.result.logs == "=== steps ===\nlog content\n"
 
-    @patch("wowkmang.worker.GitHubClient")
+    @patch("wowkmang.executor.worker.GitHubClient")
     def test_failure_path_includes_logs(self, MockGH, setup):
         setup["docker_runner"].run_claude_code.return_value = ContainerResult(
             exit_code=1, logs="error output"
@@ -949,7 +955,7 @@ class TestLogsInTaskResult:
 
         failed_files = list((setup["config"].tasks_dir / "failed").glob("*.yaml"))
         assert len(failed_files) == 1
-        from wowkmang.models import task_from_yaml
+        from wowkmang.taskqueue.models import task_from_yaml
 
         saved = task_from_yaml(failed_files[0].read_text())
         assert saved.result.logs == "=== claude_code ===\nfailed\n"
@@ -1009,7 +1015,7 @@ class TestFixLoop:
         return FixLoop(docker_runner, hook_runner), docker_runner, hook_runner
 
     def _make_task(self):
-        from wowkmang.models import Task, TaskSource, TaskSourceInfo
+        from wowkmang.taskqueue.models import Task, TaskSource, TaskSourceInfo
 
         return Task(
             project="test",
@@ -1019,7 +1025,7 @@ class TestFixLoop:
         )
 
     def _make_project(self, **overrides):
-        from wowkmang.config import ProjectConfig
+        from wowkmang.api.config import ProjectConfig
 
         defaults = {
             "name": "test",

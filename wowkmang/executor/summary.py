@@ -5,9 +5,9 @@ import re
 import yaml
 from pydantic import BaseModel
 
-from wowkmang.config import ProjectConfig
-from wowkmang.docker_runner import DockerRunner
-from wowkmang.models import Task
+from wowkmang.api.config import ProjectConfig
+from wowkmang.executor.docker_runner import DockerRunner
+from wowkmang.taskqueue.models import Task
 
 logger = logging.getLogger(__name__)
 
