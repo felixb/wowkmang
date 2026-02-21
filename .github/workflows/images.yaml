@@ -1,0 +1,47 @@
+---
+name: Build and push task images
+on:
+  push:
+    branches: [main]
+    paths: [images/**, .github/workflows/images.yaml]
+  pull_request:
+    branches: [main]
+    paths: [images/**, .github/workflows/images.yaml]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  prep:
+    name: Prepare tags
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Inject slug variables
+        uses: rlespinasse/github-slug-action@v4
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.number }}-${{ env.GITHUB_HEAD_REF_SLUG }}" >> $GITHUB_OUTPUT
+          fi
+  build-base:
+    name: Build base image
+    needs: [prep]
+    uses: ./.github/workflows/_build-image.yaml
+    with:
+      image_name: base
+      context: images/base
+      tag: ${{ needs.prep.outputs.tag }}
+  build-python:
+    name: Build python image
+    needs: [prep, build-base]
+    uses: ./.github/workflows/_build-image.yaml
+    with:
+      image_name: python
+      context: images/python
+      tag: ${{ needs.prep.outputs.tag }}
+      build_contexts: |-
+        wowkmang:base=docker-image://ghcr.io/${{ github.repository }}/base:${{ needs.prep.outputs.tag }}
