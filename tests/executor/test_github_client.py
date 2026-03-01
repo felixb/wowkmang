@@ -1,31 +1,30 @@
 import json
+from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
-import respx
+from github import GithubException
 
 from wowkmang.executor.github_client import GitHubClient, fetch_and_save_comments
 
-BASE_URL = "https://api.github.com/repos/user/project"
+
+@pytest.fixture
+def mock_repo():
+    return MagicMock()
 
 
 @pytest.fixture
-def client():
-    return GitHubClient(token="ghp_test123", repo="user/project")
+def client(mock_repo):
+    with patch("wowkmang.executor.github_client.Github") as MockGithub:
+        MockGithub.return_value.get_repo.return_value = mock_repo
+        yield GitHubClient(token="ghp_test123", repo="user/project")
 
 
 class TestCreatePR:
-    @respx.mock
-    def test_creates_pr_with_correct_payload(self, client):
-        route = respx.post(f"{BASE_URL}/pulls").mock(
-            return_value=httpx.Response(
-                201,
-                json={
-                    "number": 42,
-                    "html_url": "https://github.com/user/project/pull/42",
-                },
-            )
-        )
+    def test_creates_pr_with_correct_payload(self, client, mock_repo):
+        mock_pr = MagicMock()
+        mock_pr.number = 42
+        mock_pr.html_url = "https://github.com/user/project/pull/42"
+        mock_repo.create_pull.return_value = mock_pr
 
         result = client.create_pr(
             title="Fix login bug",
@@ -34,25 +33,19 @@ class TestCreatePR:
             base="main",
         )
 
-        assert route.called
-        request_json = route.calls[0].request.read()
-        import json
-
-        payload = json.loads(request_json)
-        assert payload == {
-            "title": "Fix login bug",
-            "body": "Closes #10",
-            "head": "wowkmang/fix-login",
-            "base": "main",
-            "draft": False,
-        }
+        mock_repo.create_pull.assert_called_once_with(
+            title="Fix login bug",
+            body="Closes #10",
+            head="wowkmang/fix-login",
+            base="main",
+            draft=False,
+        )
         assert result["number"] == 42
 
-    @respx.mock
-    def test_creates_draft_pr(self, client):
-        route = respx.post(f"{BASE_URL}/pulls").mock(
-            return_value=httpx.Response(201, json={"number": 43, "draft": True})
-        )
+    def test_creates_draft_pr(self, client, mock_repo):
+        mock_pr = MagicMock()
+        mock_pr.number = 43
+        mock_repo.create_pull.return_value = mock_pr
 
         result = client.create_pr(
             title="WIP: fix",
@@ -62,88 +55,89 @@ class TestCreatePR:
             draft=True,
         )
 
-        import json
+        call_kwargs = mock_repo.create_pull.call_args.kwargs
+        assert call_kwargs["draft"] is True
+        assert result["number"] == 43
 
-        payload = json.loads(route.calls[0].request.read())
-        assert payload["draft"] is True
-        assert result["draft"] is True
-
-    @respx.mock
-    def test_http_error_raises(self, client):
-        respx.post(f"{BASE_URL}/pulls").mock(
-            return_value=httpx.Response(422, json={"message": "Validation Failed"})
+    def test_http_error_raises(self, client, mock_repo):
+        mock_repo.create_pull.side_effect = GithubException(
+            422, {"message": "Validation Failed"}
         )
 
-        with pytest.raises(httpx.HTTPStatusError, match="create PR.*422"):
+        with pytest.raises(GithubException) as exc_info:
             client.create_pr("t", "b", "branch", "main")
+
+        assert exc_info.value.status == 422
 
 
 class TestAddLabels:
-    @respx.mock
-    def test_adds_labels(self, client):
-        route = respx.post(f"{BASE_URL}/issues/10/labels").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+    def test_adds_labels(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
 
         client.add_labels(10, ["wowkmang/done", "enhancement"])
 
-        import json
+        mock_repo.get_issue.assert_called_once_with(10)
+        mock_issue.add_to_labels.assert_called_once_with("wowkmang/done", "enhancement")
 
-        payload = json.loads(route.calls[0].request.read())
-        assert payload == {"labels": ["wowkmang/done", "enhancement"]}
-
-    @respx.mock
-    def test_error_raises(self, client):
-        respx.post(f"{BASE_URL}/issues/10/labels").mock(
-            return_value=httpx.Response(403, json={"message": "Forbidden"})
+    def test_error_raises(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.add_to_labels.side_effect = GithubException(
+            403, {"message": "Forbidden"}
         )
 
-        with pytest.raises(httpx.HTTPStatusError, match="add labels.*403"):
+        with pytest.raises(GithubException) as exc_info:
             client.add_labels(10, ["label"])
+
+        assert exc_info.value.status == 403
 
 
 class TestRemoveLabel:
-    @respx.mock
-    def test_removes_label(self, client):
-        route = respx.delete(f"{BASE_URL}/issues/10/labels/wowkmang").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+    def test_removes_label(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
 
         client.remove_label(10, "wowkmang")
 
-        assert route.called
+        mock_repo.get_issue.assert_called_once_with(10)
+        mock_issue.remove_from_labels.assert_called_once_with("wowkmang")
 
-    @respx.mock
-    def test_404_is_ignored(self, client):
-        respx.delete(f"{BASE_URL}/issues/10/labels/gone").mock(
-            return_value=httpx.Response(404, json={"message": "Not Found"})
+    def test_404_is_ignored(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.remove_from_labels.side_effect = GithubException(
+            404, {"message": "Not Found"}
         )
 
         # Should not raise
         client.remove_label(10, "gone")
 
-    @respx.mock
-    def test_other_error_raises(self, client):
-        respx.delete(f"{BASE_URL}/issues/10/labels/x").mock(
-            return_value=httpx.Response(500, json={"message": "Server Error"})
+    def test_other_error_raises(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.remove_from_labels.side_effect = GithubException(
+            500, {"message": "Server Error"}
         )
 
-        with pytest.raises(httpx.HTTPStatusError, match="remove label.*500"):
+        with pytest.raises(GithubException) as exc_info:
             client.remove_label(10, "x")
+
+        assert exc_info.value.status == 500
 
 
 class TestGetIssueComments:
-    @respx.mock
-    def test_fetches_comments(self, client):
-        respx.get(f"{BASE_URL}/issues/10/comments").mock(
-            return_value=httpx.Response(
-                200,
-                json=[
-                    {"user": {"login": "alice"}, "body": "Looks good"},
-                    {"user": {"login": "bob"}, "body": "Needs work"},
-                ],
-            )
-        )
+    def test_fetches_comments(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+
+        comment1 = MagicMock()
+        comment1.user.login = "alice"
+        comment1.body = "Looks good"
+        comment2 = MagicMock()
+        comment2.user.login = "bob"
+        comment2.body = "Needs work"
+        mock_issue.get_comments.return_value = [comment1, comment2]
 
         comments = client.get_issue_comments(10)
 
@@ -151,45 +145,43 @@ class TestGetIssueComments:
         assert comments[0] == {"user": "alice", "body": "Looks good"}
         assert comments[1] == {"user": "bob", "body": "Needs work"}
 
-    @respx.mock
-    def test_empty_comments(self, client):
-        respx.get(f"{BASE_URL}/issues/5/comments").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+    def test_empty_comments(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.get_comments.return_value = []
 
         assert client.get_issue_comments(5) == []
 
-    @respx.mock
-    def test_error_raises(self, client):
-        respx.get(f"{BASE_URL}/issues/10/comments").mock(
-            return_value=httpx.Response(403, json={"message": "Forbidden"})
+    def test_error_raises(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.get_comments.side_effect = GithubException(
+            403, {"message": "Forbidden"}
         )
 
-        with pytest.raises(httpx.HTTPStatusError, match="get issue comments.*403"):
+        with pytest.raises(GithubException) as exc_info:
             client.get_issue_comments(10)
+
+        assert exc_info.value.status == 403
 
 
 class TestGetPRComments:
-    @respx.mock
-    def test_fetches_both_types(self, client):
-        respx.get(f"{BASE_URL}/issues/7/comments").mock(
-            return_value=httpx.Response(
-                200,
-                json=[{"user": {"login": "alice"}, "body": "LGTM"}],
-            )
-        )
-        respx.get(f"{BASE_URL}/pulls/7/comments").mock(
-            return_value=httpx.Response(
-                200,
-                json=[
-                    {
-                        "user": {"login": "bob"},
-                        "body": "Fix this",
-                        "path": "src/main.py",
-                    },
-                ],
-            )
-        )
+    def test_fetches_both_types(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_pr = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_repo.get_pull.return_value = mock_pr
+
+        issue_comment = MagicMock()
+        issue_comment.user.login = "alice"
+        issue_comment.body = "LGTM"
+        mock_issue.get_comments.return_value = [issue_comment]
+
+        review_comment = MagicMock()
+        review_comment.user.login = "bob"
+        review_comment.body = "Fix this"
+        review_comment.path = "src/main.py"
+        mock_pr.get_review_comments.return_value = [review_comment]
 
         comments = client.get_pr_comments(7)
 
@@ -199,147 +191,145 @@ class TestGetPRComments:
 
 
 class TestGetPRBranch:
-    @respx.mock
-    def test_returns_head_ref(self, client):
-        respx.get(f"{BASE_URL}/pulls/7").mock(
-            return_value=httpx.Response(
-                200,
-                json={"head": {"ref": "feature/my-branch"}},
-            )
-        )
+    def test_returns_head_ref(self, client, mock_repo):
+        mock_pr = MagicMock()
+        mock_repo.get_pull.return_value = mock_pr
+        mock_pr.head.ref = "feature/my-branch"
 
         assert client.get_pr_branch(7) == "feature/my-branch"
 
-    @respx.mock
-    def test_error_raises(self, client):
-        respx.get(f"{BASE_URL}/pulls/999").mock(
-            return_value=httpx.Response(404, json={"message": "Not Found"})
-        )
+    def test_error_raises(self, client, mock_repo):
+        mock_repo.get_pull.side_effect = GithubException(404, {"message": "Not Found"})
 
-        with pytest.raises(httpx.HTTPStatusError, match="get PR branch.*404"):
+        with pytest.raises(GithubException) as exc_info:
             client.get_pr_branch(999)
+
+        assert exc_info.value.status == 404
 
 
 class TestCreateComment:
-    @respx.mock
-    def test_posts_comment(self, client):
-        import json
+    def test_posts_comment(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
 
-        route = respx.post(f"{BASE_URL}/issues/42/comments").mock(
-            return_value=httpx.Response(201, json={"id": 1, "body": "Hello"})
-        )
+        mock_comment = MagicMock()
+        mock_comment.id = 1
+        mock_comment.body = "Hello"
+        mock_issue.create_comment.return_value = mock_comment
 
         result = client.create_comment(42, "Hello")
 
-        assert route.called
-        payload = json.loads(route.calls[0].request.read())
-        assert payload == {"body": "Hello"}
+        mock_issue.create_comment.assert_called_once_with("Hello")
         assert result["body"] == "Hello"
 
-    @respx.mock
-    def test_error_raises(self, client):
-        respx.post(f"{BASE_URL}/issues/42/comments").mock(
-            return_value=httpx.Response(403, json={"message": "Forbidden"})
+    def test_error_raises(self, client, mock_repo):
+        mock_issue = MagicMock()
+        mock_repo.get_issue.return_value = mock_issue
+        mock_issue.create_comment.side_effect = GithubException(
+            403, {"message": "Forbidden"}
         )
 
-        with pytest.raises(httpx.HTTPStatusError, match="create comment.*403"):
+        with pytest.raises(GithubException) as exc_info:
             client.create_comment(42, "test")
+
+        assert exc_info.value.status == 403
 
 
 class TestFetchAndSaveComments:
-    @respx.mock
     def test_saves_issue_comments(self, tmp_path):
-        respx.get(f"{BASE_URL}/issues/10/comments").mock(
-            return_value=httpx.Response(
-                200,
-                json=[{"user": {"login": "alice"}, "body": "Hello"}],
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
+
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+
+            comment = MagicMock()
+            comment.user.login = "alice"
+            comment.body = "Hello"
+            mock_issue.get_comments.return_value = [comment]
+
+            context_dir = tmp_path / "context"
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=10,
+                task_id="abc123",
+                context_dir=context_dir,
             )
-        )
 
-        context_dir = tmp_path / "context"
-        result = fetch_and_save_comments(
-            github_token="ghp_test123",
-            repo_full_name="user/project",
-            source_type="github_issue",
-            source_number=10,
-            task_id="abc123",
-            context_dir=context_dir,
-        )
+            assert result is not None
+            assert context_dir.exists()
+            data = json.loads((context_dir / "abc123_comments.json").read_text())
+            assert len(data) == 1
+            assert data[0]["user"] == "alice"
 
-        assert result is not None
-        assert context_dir.exists()
-        data = json.loads((context_dir / "abc123_comments.json").read_text())
-        assert len(data) == 1
-        assert data[0]["user"] == "alice"
-
-    @respx.mock
     def test_saves_pr_comments(self, tmp_path):
-        respx.get(f"{BASE_URL}/issues/7/comments").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        respx.get(f"{BASE_URL}/pulls/7/comments").mock(
-            return_value=httpx.Response(
-                200,
-                json=[
-                    {"user": {"login": "bob"}, "body": "Fix", "path": "a.py"},
-                ],
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
+
+            mock_issue = MagicMock()
+            mock_pr = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+            mock_repo.get_pull.return_value = mock_pr
+
+            mock_issue.get_comments.return_value = []
+
+            review_comment = MagicMock()
+            review_comment.user.login = "bob"
+            review_comment.body = "Fix"
+            review_comment.path = "a.py"
+            mock_pr.get_review_comments.return_value = [review_comment]
+
+            context_dir = tmp_path / "context"
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_pr",
+                source_number=7,
+                task_id="def456",
+                context_dir=context_dir,
             )
-        )
 
-        context_dir = tmp_path / "context"
-        result = fetch_and_save_comments(
-            github_token="ghp_test123",
-            repo_full_name="user/project",
-            source_type="github_pr",
-            source_number=7,
-            task_id="def456",
-            context_dir=context_dir,
-        )
+            assert result is not None
+            data = json.loads((context_dir / "def456_comments.json").read_text())
+            assert len(data) == 1
 
-        assert result is not None
-        data = json.loads((context_dir / "def456_comments.json").read_text())
-        assert len(data) == 1
-
-    @respx.mock
     def test_returns_none_when_no_comments(self, tmp_path):
-        respx.get(f"{BASE_URL}/issues/5/comments").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
 
-        result = fetch_and_save_comments(
-            github_token="ghp_test123",
-            repo_full_name="user/project",
-            source_type="github_issue",
-            source_number=5,
-            task_id="ghi789",
-            context_dir=tmp_path / "context",
-        )
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+            mock_issue.get_comments.return_value = []
 
-        assert result is None
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=5,
+                task_id="ghi789",
+                context_dir=tmp_path / "context",
+            )
+
+            assert result is None
 
     def test_returns_none_on_error(self, tmp_path):
-        # No mock — will fail to connect
-        result = fetch_and_save_comments(
-            github_token="ghp_test123",
-            repo_full_name="user/project",
-            source_type="github_issue",
-            source_number=10,
-            task_id="err",
-            context_dir=tmp_path / "context",
-        )
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            MockGithub.return_value.get_repo.side_effect = GithubException(
+                401, {"message": "Unauthorized"}
+            )
 
-        assert result is None
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=10,
+                task_id="err",
+                context_dir=tmp_path / "context",
+            )
 
-
-class TestHeaders:
-    @respx.mock
-    def test_auth_header_is_set(self, client):
-        route = respx.post(f"{BASE_URL}/pulls").mock(
-            return_value=httpx.Response(201, json={"number": 1})
-        )
-
-        client.create_pr("t", "b", "h", "main")
-
-        request = route.calls[0].request
-        assert request.headers["authorization"] == "Bearer ghp_test123"
-        assert "application/vnd.github+json" in request.headers["accept"]
+            assert result is None
