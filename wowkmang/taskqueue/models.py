@@ -20,6 +20,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    WAITING_FOR_INPUT = "waiting_for_input"
 
 
 class TaskSourceInfo(BaseModel):
@@ -40,6 +41,7 @@ class TaskResult(BaseModel):
     fix_attempts: Optional[int] = None
     error: Optional[str] = None
     logs: Optional[str] = None
+    questions: Optional[list[dict]] = None
 
 
 class Task(BaseModel):
@@ -54,6 +56,9 @@ class Task(BaseModel):
     attempts: int = 0
     max_attempts: int = 3
     result: Optional[TaskResult] = None
+    comments_file: Optional[str] = None
+    allow_questions: bool = False
+    pr_branch: Optional[str] = None
 
 
 def task_to_yaml(task: Task) -> str:

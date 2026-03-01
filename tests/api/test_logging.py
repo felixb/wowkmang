@@ -31,7 +31,6 @@ class TestLoggingSetup:
             patch("wowkmang.api.routes.RepoCache"),
             patch("wowkmang.api.routes.HookRunner"),
             patch("wowkmang.api.routes.FixLoop"),
-            patch("wowkmang.api.routes.SummaryGenerator"),
             patch("wowkmang.api.routes.Worker") as MockWorker,
         ):
             MockWorker.return_value = MagicMock()

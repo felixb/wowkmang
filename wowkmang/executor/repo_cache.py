@@ -16,11 +16,18 @@ class RepoCache:
         project_volume: str,
         image: str,
         github_token: str | None = None,
+        existing_branch: str | None = None,
     ) -> str:
         """Clone repo into work volume using project cache for speed. Returns branch name."""
         authed_url = self._authed_url(repo_url, github_token)
         cache_subdir = self.cache_subdir(repo_url)
-        branch_name = f"wowkmang/{uuid.uuid4().hex[:8]}"
+
+        if existing_branch:
+            branch_name = existing_branch
+            checkout_cmd = f"git checkout {existing_branch}\n"
+        else:
+            branch_name = f"wowkmang/{uuid.uuid4().hex[:8]}"
+            checkout_cmd = f"git checkout -b {branch_name} origin/{ref}\n"
 
         script = (
             f"set -e\n"
@@ -32,8 +39,7 @@ class RepoCache:
             f"  git clone --bare {authed_url} /cache/{cache_subdir}\n"
             f"fi\n"
             f"git clone --reference /cache/{cache_subdir} {authed_url} /workspace/repo\n"
-            f"cd /workspace/repo\n"
-            f"git checkout -b {branch_name} origin/{ref}\n"
+            f"cd /workspace/repo\n" + checkout_cmd
         )
 
         environment = {"GIT_TERMINAL_PROMPT": "0"}

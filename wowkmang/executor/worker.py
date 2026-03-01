@@ -1,3 +1,4 @@
+import json
 import logging
 import shlex
 import threading
@@ -9,6 +10,13 @@ from wowkmang.api.config import GlobalConfig, ProjectConfig
 from wowkmang.executor.docker_runner import ContainerResult, DockerRunner
 from wowkmang.executor.github_client import GitHubClient
 from wowkmang.executor.hooks import HookResult, HookRunner, HookType
+from wowkmang.executor.prompts import build_task_prompt
+from wowkmang.executor.result_file import (
+    RESULT_FILE_PATH,
+    TaskOutput,
+    parse_result_file,
+)
+from wowkmang.executor.summary import PRMetadata, fallback_metadata
 from wowkmang.taskqueue.models import (
     Task,
     TaskResult,
@@ -21,9 +29,9 @@ from wowkmang.taskqueue.task_queue import (
     fail_task,
     pick_next_task,
     prune_old_tasks,
+    wait_for_input,
 )
 from wowkmang.executor.repo_cache import RepoCache
-from wowkmang.executor.summary import SummaryGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +93,6 @@ class Worker:
         repo_cache: RepoCache,
         hook_runner: HookRunner,
         fix_loop: FixLoop,
-        summary_generator: SummaryGenerator,
     ):
         self.config = config
         self.projects = projects
@@ -93,7 +100,6 @@ class Worker:
         self.repo_cache = repo_cache
         self.hook_runner = hook_runner
         self.fix_loop = fix_loop
-        self.summary_generator = summary_generator
         self._status = WorkerStatus.IDLE
         self._running = False
         self._thread: threading.Thread | None = None
@@ -192,38 +198,30 @@ class Worker:
         github_token = project.github_token or self.config.github_token
         image = self.docker_runner.resolve_image(project)
 
-        # Pull image once for the entire task
-        self.docker_runner.ensure_image(image, project)
+        # Remove trigger label early to prevent re-triggering
+        self._remove_trigger_label(task, project, github_token)
 
-        # Resolve effective container uid up front
         effective_uid = project.container_uid or self.config.container_uid
 
-        # Inject fresh credentials into persistent project volume
-        self._seed_credentials(project_volume, image, effective_uid)
-
-        # Chown workspace so non-root containers can write to it
-        self.docker_runner.chown_volume(
-            image=image,
-            work_volume=work_volume,
-            uid=effective_uid,
+        # Setup environment: image, credentials, volumes, gitignore, repo
+        self._setup_environment(
+            task,
+            project,
+            work_volume,
+            project_volume,
+            image,
+            github_token,
+            effective_uid,
         )
-
-        # Chown project volume so non-root containers can read/write cache and .claude
-        self.docker_runner.chown_project_volume(
-            image=image,
-            project_volume=project_volume,
-            uid=effective_uid,
-        )
-
-        # Create .wowkmang dir for step logs
-        self._create_wowkmang_dir(work_volume, project_volume, image)
-
-        # Repo preparation
         branch = self.repo_cache.prepare_workdir(
-            task.repo, task.ref, work_volume, project_volume, image, github_token
+            task.repo,
+            task.ref,
+            work_volume,
+            project_volume,
+            image,
+            github_token,
+            existing_branch=task.pr_branch,
         )
-
-        # Configure git identity in the cloned repo
         self._configure_git(work_volume, project_volume, image, project)
 
         # Pre-task hooks
@@ -244,18 +242,10 @@ class Worker:
                 self._fail_task(task_file, task)
                 return
 
-        # Claude Code execution
-        model = task.model or project.default_model
-
-        cc_result = self.docker_runner.run_claude_code(
-            work_dir=work_volume,
-            project_volume=project_volume,
-            task_prompt=task.task,
-            model=model,
-            project=project,
-            timeout_minutes=project.timeout_minutes,
+        # Run Claude Code
+        cc_result = self._execute_claude_code(
+            task, project, work_volume, project_volume, image
         )
-
         self._log_step("claude_code", cc_result, work_volume, project_volume, image)
         if cc_result.exit_code != 0:
             duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
@@ -268,94 +258,212 @@ class Worker:
             self._fail_task(task_file, task)
             return
 
-        # Post-task checks: pre-commit (auto-fix → stage → verify) then post hooks
+        task_output = self._read_result_file(work_volume, project_volume, image)
+
+        # Post-task checks
+        check_result = self._run_post_checks(
+            task_file, task, project, work_volume, project_volume, start_time
+        )
+        if check_result is None:
+            return  # task was failed by _run_post_checks
+        draft, post_passed, fix_attempts = check_result
+
+        # Handle no-changes case
+        if not self._has_any_changes(work_volume, project_volume, task.ref, image):
+            self._handle_no_changes(
+                task_file, task, task_output, github_token, start_time, post_passed
+            )
+            return
+
+        # Commit, push, create PR, update labels, complete
+        self._publish_and_complete(
+            task_file,
+            task,
+            task_output,
+            project,
+            work_volume,
+            project_volume,
+            image,
+            branch,
+            github_token,
+            draft,
+            post_passed,
+            fix_attempts,
+            start_time,
+        )
+
+    def _setup_environment(
+        self,
+        task: Task,
+        project: ProjectConfig,
+        work_volume: str,
+        project_volume: str,
+        image: str,
+        github_token: str,
+        effective_uid: str,
+    ) -> None:
+        """Pull image, seed credentials, chown volumes, setup gitignore, create log dir."""
+        self.docker_runner.ensure_image(image, project)
+        self._seed_credentials(project_volume, image, effective_uid)
+        self.docker_runner.chown_volume(
+            image=image, work_volume=work_volume, uid=effective_uid
+        )
+        self.docker_runner.chown_project_volume(
+            image=image, project_volume=project_volume, uid=effective_uid
+        )
+        self.docker_runner.setup_global_gitignore(
+            project_volume=project_volume, image=image, uid=effective_uid
+        )
+        self._create_wowkmang_dir(work_volume, project_volume, image)
+
+    def _execute_claude_code(
+        self,
+        task: Task,
+        project: ProjectConfig,
+        work_volume: str,
+        project_volume: str,
+        image: str,
+    ) -> ContainerResult:
+        """Build prompt and run Claude Code."""
+        comments = self._read_comments_file(task.comments_file)
+        prompt = build_task_prompt(task, project, comments)
+        model = task.model or project.default_model
+        return self.docker_runner.run_claude_code(
+            work_dir=work_volume,
+            project_volume=project_volume,
+            task_prompt=prompt,
+            model=model,
+            project=project,
+            timeout_minutes=project.timeout_minutes,
+        )
+
+    def _run_post_checks(
+        self,
+        task_file,
+        task: Task,
+        project: ProjectConfig,
+        work_volume: str,
+        project_volume: str,
+        start_time: datetime,
+    ) -> tuple[bool, bool, int] | None:
+        """Run post-task checks and fix loop. Returns (draft, post_passed, fix_attempts) or None if task was failed."""
         draft = False
-        hook_output = None
         post_passed = True
         fix_attempts = 0
         post_result = self.hook_runner.run_post_task_checks(
             work_volume, project_volume, project
         )
 
-        if not post_result.success:
-            post_passed = False
-            policy = project.post_task_policy
+        if post_result.success:
+            return draft, post_passed, fix_attempts
 
-            if policy == "fail":
+        post_passed = False
+        policy = project.post_task_policy
+
+        if policy == "fail":
+            duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
+            task.result = TaskResult(
+                status=TaskStatus.FAILED,
+                error=f"Post-task checks failed:\n{post_result.output}",
+                duration_seconds=duration,
+                finished=datetime.now(timezone.utc),
+                post_task_passed=False,
+            )
+            self._fail_task(task_file, task)
+            return None
+
+        if policy in ("fix_or_fail", "fix_or_warn"):
+            post_result = self.fix_loop.run(
+                task, project, work_volume, project_volume, post_result
+            )
+            fix_attempts = project.max_fix_attempts
+
+            if post_result.success:
+                post_passed = True
+            elif policy == "fix_or_fail":
                 duration = int(
                     (datetime.now(timezone.utc) - start_time).total_seconds()
                 )
                 task.result = TaskResult(
                     status=TaskStatus.FAILED,
-                    error=f"Post-task checks failed:\n{post_result.output}",
+                    error=f"Post-task checks failed after {fix_attempts} fix attempts:\n{post_result.output}",
                     duration_seconds=duration,
                     finished=datetime.now(timezone.utc),
                     post_task_passed=False,
+                    fix_attempts=fix_attempts,
                 )
                 self._fail_task(task_file, task)
-                return
-
-            if policy in ("fix_or_fail", "fix_or_warn"):
-                post_result = self.fix_loop.run(
-                    task, project, work_volume, project_volume, post_result
-                )
-                fix_attempts = project.max_fix_attempts
-
-                if post_result.success:
-                    post_passed = True
-                elif policy == "fix_or_fail":
-                    duration = int(
-                        (datetime.now(timezone.utc) - start_time).total_seconds()
-                    )
-                    task.result = TaskResult(
-                        status=TaskStatus.FAILED,
-                        error=f"Post-task checks failed after {fix_attempts} fix attempts:\n{post_result.output}",
-                        duration_seconds=duration,
-                        finished=datetime.now(timezone.utc),
-                        post_task_passed=False,
-                        fix_attempts=fix_attempts,
-                    )
-                    self._fail_task(task_file, task)
-                    return
-                else:
-                    # fix_or_warn: proceed with draft PR
-                    draft = True
-                    hook_output = post_result.output
-
-            if policy == "warn" and not post_result.success:
+                return None
+            else:
                 draft = True
-                hook_output = post_result.output
 
-        # Check if there are actual changes before committing
-        if not self._has_any_changes(work_volume, project_volume, task.ref, image):
-            duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
-            task.result = TaskResult(
-                status=TaskStatus.COMPLETED,
-                error="No changes produced",
-                duration_seconds=duration,
-                finished=datetime.now(timezone.utc),
-                post_task_passed=post_passed,
+        if policy == "warn" and not post_result.success:
+            draft = True
+
+        return draft, post_passed, fix_attempts
+
+    def _handle_no_changes(
+        self,
+        task_file,
+        task: Task,
+        task_output: TaskOutput | None,
+        github_token: str,
+        start_time: datetime,
+        post_passed: bool,
+    ) -> None:
+        """Handle the case where Claude produced no code changes."""
+        self._handle_comment(task_output, task, github_token)
+        if task_output and task_output.questions and task.allow_questions:
+            self._handle_questions(
+                task_file, task, task_output, start_time, post_passed
             )
-            self._complete_task(task_file, task)
             return
 
-        # Get diff before committing so we can generate a proper commit message
-        diff = self._get_diff_before_commit(
-            work_volume, project_volume, task.ref, image
+        duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
+        task.result = TaskResult(
+            status=TaskStatus.COMPLETED,
+            error="No changes produced",
+            duration_seconds=duration,
+            finished=datetime.now(timezone.utc),
+            post_task_passed=post_passed,
         )
+        self._complete_task(task_file, task)
 
-        # Generate PR metadata (provides commit message and PR title)
-        pr_meta = self.summary_generator.generate(
-            task,
-            diff,
-            hook_output,
-            project=project,
-            work_dir=work_volume,
-            project_volume=project_volume,
-        )
+    def _publish_and_complete(
+        self,
+        task_file,
+        task: Task,
+        task_output: TaskOutput | None,
+        project: ProjectConfig,
+        work_volume: str,
+        project_volume: str,
+        image: str,
+        branch: str,
+        github_token: str,
+        draft: bool,
+        post_passed: bool,
+        fix_attempts: int,
+        start_time: datetime,
+    ) -> None:
+        """Commit changes, push, create PR, update labels, and complete task."""
+        # Determine PR metadata from result file or fallback
+        if task_output and task_output.commit:
+            branch_name = task_output.commit.branch_name
+            if task.pr_branch:
+                pr_branch = task.pr_branch
+            else:
+                pr_branch = f"wowkmang/{branch_name}"
+            pr_meta = PRMetadata(
+                title=task_output.commit.title,
+                branch=pr_branch,
+                description=task_output.commit.description
+                or f"Automated changes for: {task.task}",
+            )
+        else:
+            pr_meta = fallback_metadata(task)
 
         self._log_step(
-            "summary",
+            "result_file",
             ContainerResult(
                 exit_code=0, logs=f"title={pr_meta.title} branch={pr_meta.branch}"
             ),
@@ -364,16 +472,19 @@ class Worker:
             image,
         )
 
-        # Commit with the generated PR title as the commit message
+        # Commit
         commit_result = self._commit_changes(
             work_volume, project_volume, image, commit_message=pr_meta.title
         )
         self._log_step("commit", commit_result, work_volume, project_volume, image)
 
-        # Rename branch
-        self._rename_branch(work_volume, project_volume, branch, pr_meta.branch, image)
+        # Rename branch (skip if using existing PR branch)
+        if not task.pr_branch:
+            self._rename_branch(
+                work_volume, project_volume, branch, pr_meta.branch, image
+            )
 
-        # Push via container
+        # Push
         push_result = self.docker_runner.run_command(
             work_dir=work_volume,
             project_volume=project_volume,
@@ -387,46 +498,63 @@ class Worker:
                 f"Git push failed (exit {push_result.exit_code}):\n{push_result.logs}"
             )
 
-        # Create GitHub client for API operations
         gh = GitHubClient(
             token=github_token or "",
             repo=self._extract_repo(task.repo),
         )
 
-        pr_data = gh.create_pr(
-            title=pr_meta.title,
-            body=pr_meta.description,
-            branch=pr_meta.branch,
-            base=task.ref,
-            draft=draft,
-        )
+        self._handle_comment(task_output, task, github_token)
 
-        pr_number = pr_data["number"]
-
-        # Labels
-        done_label = project.github_labels.done
-        needs_attention_label = project.github_labels.needs_attention
-
-        if draft:
-            gh.add_labels(pr_number, [needs_attention_label])
+        # Create PR or use existing branch
+        if task.pr_branch:
+            pr_number = task.source.pr_number
+            pr_url = None
         else:
-            gh.add_labels(pr_number, [done_label])
+            pr_data = gh.create_pr(
+                title=pr_meta.title,
+                body=pr_meta.description,
+                branch=pr_meta.branch,
+                base=task.ref,
+                draft=draft,
+            )
+            pr_number = pr_data["number"]
+            pr_url = pr_data.get("html_url")
+
+            done_label = project.github_labels.done
+            needs_attention_label = project.github_labels.needs_attention
+            if draft:
+                gh.add_labels(pr_number, [needs_attention_label])
+            else:
+                gh.add_labels(pr_number, [done_label])
 
         # Update source issue/PR labels
         source_number = task.source.issue_number or task.source.pr_number
-        if source_number:
-            try:
-                gh.remove_label(source_number, project.github_labels.trigger)
-            except Exception:
-                logger.debug("Could not remove trigger label from #%s", source_number)
+        if source_number and not task.pr_branch:
+            done_label = project.github_labels.done
+            needs_attention_label = project.github_labels.needs_attention
             label = needs_attention_label if draft else done_label
             gh.add_labels(source_number, [label])
+
+        # Handle questions (after commit/push)
+        if task_output and task_output.questions and task.allow_questions:
+            self._handle_questions(
+                task_file,
+                task,
+                task_output,
+                start_time,
+                post_passed,
+                pr_url=pr_url,
+                pr_number=pr_number,
+                branch=pr_meta.branch,
+                fix_attempts=fix_attempts,
+            )
+            return
 
         # Complete task
         duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
         task.result = TaskResult(
             status=TaskStatus.COMPLETED,
-            pr_url=pr_data.get("html_url"),
+            pr_url=pr_url,
             pr_number=pr_number,
             branch=pr_meta.branch,
             duration_seconds=duration,
@@ -435,6 +563,140 @@ class Worker:
             fix_attempts=fix_attempts if fix_attempts > 0 else None,
         )
         self._complete_task(task_file, task)
+
+    def _read_result_file(
+        self, work_volume: str, project_volume: str, image: str
+    ) -> TaskOutput | None:
+        """Read and parse .claude-result.json from work volume."""
+        try:
+            raw = self.docker_runner.read_file(
+                volume=work_volume,
+                path=RESULT_FILE_PATH,
+                image=image,
+                mount_point="/workspace",
+            )
+            if not raw:
+                return None
+            return parse_result_file(raw)
+        except Exception:
+            logger.warning("Could not read/parse .claude-result.json")
+            return None
+
+    def _read_comments_file(self, comments_file: str | None) -> str | None:
+        """Read comments context file from disk."""
+        if not comments_file:
+            return None
+        try:
+            from pathlib import Path
+
+            path = Path(comments_file)
+            if path.exists():
+                data = json.loads(path.read_text())
+                parts = []
+                for c in data:
+                    user = c.get("user", "unknown")
+                    body = c.get("body", "")
+                    path_info = c.get("path", "")
+                    header = f"**@{user}**"
+                    if path_info:
+                        header += f" (on `{path_info}`)"
+                    parts.append(f"{header}:\n{body}")
+                return "\n\n---\n\n".join(parts)
+        except Exception:
+            logger.warning("Could not read comments file: %s", comments_file)
+        return None
+
+    def _handle_comment(
+        self,
+        task_output: TaskOutput | None,
+        task: Task,
+        github_token: str | None,
+    ) -> None:
+        """Post a comment on the source issue/PR if result file contains one."""
+        if not task_output or not task_output.comment:
+            return
+        source_number = task.source.issue_number or task.source.pr_number
+        if not source_number:
+            return
+        try:
+            gh = GitHubClient(
+                token=github_token or "",
+                repo=self._extract_repo(task.repo),
+            )
+            gh.create_comment(source_number, task_output.comment.message)
+        except Exception:
+            logger.warning("Could not post comment to #%s", source_number)
+
+    def _handle_questions(
+        self,
+        task_file,
+        task: Task,
+        task_output: TaskOutput,
+        start_time: datetime,
+        post_passed: bool,
+        pr_url: str | None = None,
+        pr_number: int | None = None,
+        branch: str | None = None,
+        fix_attempts: int = 0,
+    ) -> None:
+        """Move task to waiting state with questions."""
+        questions = [
+            {"message": q.message, "choices": q.choices} for q in task_output.questions
+        ]
+
+        # Post questions as comment on source issue/PR
+        source_number = task.source.issue_number or task.source.pr_number
+        if source_number:
+            github_token = (
+                self.projects.get(
+                    task.project, ProjectConfig(name="_", repo="")
+                ).github_token
+                or self.config.github_token
+            )
+            try:
+                gh = GitHubClient(
+                    token=github_token or "",
+                    repo=self._extract_repo(task.repo),
+                )
+                comment_parts = ["I have some questions before I can proceed:\n"]
+                for q in task_output.questions:
+                    comment_parts.append(f"- {q.message}")
+                    if q.choices:
+                        for choice in q.choices:
+                            comment_parts.append(f"  - {choice}")
+                gh.create_comment(source_number, "\n".join(comment_parts))
+            except Exception:
+                logger.warning("Could not post questions to #%s", source_number)
+
+        duration = int((datetime.now(timezone.utc) - start_time).total_seconds())
+        task.result = TaskResult(
+            status=TaskStatus.WAITING_FOR_INPUT,
+            pr_url=pr_url,
+            pr_number=pr_number,
+            branch=branch,
+            duration_seconds=duration,
+            finished=datetime.now(timezone.utc),
+            post_task_passed=post_passed,
+            fix_attempts=fix_attempts if fix_attempts > 0 else None,
+            questions=questions,
+        )
+        wait_for_input(self.config.tasks_dir, task_file, task)
+
+    def _remove_trigger_label(
+        self, task: Task, project: ProjectConfig, github_token: str
+    ) -> None:
+        """Remove the trigger label from the source issue/PR to prevent re-triggering."""
+        source_number = task.source.issue_number or task.source.pr_number
+        if not source_number:
+            return
+        try:
+            gh = GitHubClient(
+                token=github_token or "",
+                repo=self._extract_repo(task.repo),
+            )
+            gh.remove_label(source_number, project.github_labels.trigger)
+        except Exception:
+            logger.debug("Could not remove trigger label from #%s", source_number)
 
     def _create_wowkmang_dir(
         self, work_volume: str, project_volume: str, image: str
@@ -488,7 +750,7 @@ class Worker:
 
     def _save_task_result(self, task: Task) -> None:
         """Re-save task file after updating result (e.g. adding logs)."""
-        for subdir in ("done", "failed", "running", "pending"):
+        for subdir in ("done", "failed", "running", "pending", "waiting"):
             for path in (self.config.tasks_dir / subdir).glob(f"*_{task.id}.yaml"):
                 path.write_text(task_to_yaml(task))
                 return

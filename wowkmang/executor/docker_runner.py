@@ -95,6 +95,31 @@ class DockerRunner:
             logger.debug("Created project volume %s", name)
         return name
 
+    def setup_global_gitignore(
+        self,
+        project_volume: str,
+        image: str,
+        uid: str = "1000:1000",
+    ) -> None:
+        """Create a global gitignore excluding .claude-result.json on the project volume."""
+        script = (
+            "mkdir -p /cache && "
+            "printf '%s\\n' .claude-result.json > /cache/.gitignore_global && "
+            "git config --global core.excludesFile /cache/.gitignore_global"
+        )
+        volumes = {
+            project_volume: {"bind": "/cache", "mode": "rw"},
+        }
+        self._run_container(
+            image=image,
+            command=["sh", "-c", script],
+            environment={},
+            volumes=volumes,
+            timeout_seconds=30,
+            working_dir="/",
+            user=uid,
+        )
+
     def remove_volume(self, name: str) -> None:
         """Remove a Docker named volume."""
         try:

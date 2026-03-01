@@ -109,6 +109,212 @@ class TestGetTasks:
         assert resp.status_code == 404
 
 
+class TestCreateTaskWithQuestions:
+    def test_create_task_with_allow_questions(self, client, auth_headers):
+        resp = client.post(
+            "/tasks",
+            json={
+                "project": "testproject",
+                "task": "Investigate the bug",
+                "allow_questions": True,
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 202
+        task_id = resp.json()["id"]
+
+        # Verify the task has allow_questions set
+        resp = client.get(f"/tasks/{task_id}", headers=auth_headers)
+        assert resp.json()["allow_questions"] is True
+
+    def test_default_allow_questions_is_false(self, client, auth_headers):
+        resp = client.post(
+            "/tasks",
+            json={"project": "testproject", "task": "Fix it"},
+            headers=auth_headers,
+        )
+        task_id = resp.json()["id"]
+
+        resp = client.get(f"/tasks/{task_id}", headers=auth_headers)
+        # allow_questions defaults to False, but since it's False it might be excluded
+        # The field should not be True
+        data = resp.json()
+        assert data.get("allow_questions", False) is False
+
+
+class TestQuestionsEndpoints:
+    def test_get_questions_no_result(self, client, auth_headers):
+        """Task with no result returns empty questions."""
+        resp = client.post(
+            "/tasks",
+            json={"project": "testproject", "task": "Do something"},
+            headers=auth_headers,
+        )
+        task_id = resp.json()["id"]
+
+        resp = client.get(f"/tasks/{task_id}/questions", headers=auth_headers)
+        assert resp.status_code == 200
+        assert resp.json() == {"questions": []}
+
+    def test_get_questions_not_found(self, client, auth_headers):
+        resp = client.get("/tasks/nonexistent/questions", headers=auth_headers)
+        assert resp.status_code == 404
+
+    def test_post_answers_not_found(self, client, auth_headers):
+        resp = client.post(
+            "/tasks/nonexistent/answers",
+            json={"answers": ["yes"]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 404
+
+    def test_post_answers_task_not_waiting(self, client, auth_headers):
+        """Posting answers to a task that isn't waiting returns 400."""
+        resp = client.post(
+            "/tasks",
+            json={"project": "testproject", "task": "Do it"},
+            headers=auth_headers,
+        )
+        task_id = resp.json()["id"]
+
+        resp = client.post(
+            f"/tasks/{task_id}/answers",
+            json={"answers": ["yes"]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+
+class TestPRWebhookBranch:
+    """Test that PR webhook sets pr_branch from payload."""
+
+    def _sign(self, body: bytes, secret: str) -> str:
+        digest = hmac_mod.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return f"sha256={digest}"
+
+    def test_pr_labeled_stores_branch(self, client, auth_headers):
+        payload = {
+            "action": "labeled",
+            "label": {"name": "wowkmang"},
+            "repository": {"full_name": "user/testproject"},
+            "pull_request": {
+                "number": 7,
+                "title": "PR title",
+                "body": "PR body",
+                "head": {"ref": "feature/my-branch"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_testsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "pull_request",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        # Verify the task has pr_branch set
+        resp = client.get(f"/tasks/{task_id}", headers=auth_headers)
+        assert resp.json()["pr_branch"] == "feature/my-branch"
+
+
+class TestCommentWebhook:
+    """Test that issue_comment events resume waiting tasks."""
+
+    def _sign(self, body: bytes, secret: str) -> str:
+        digest = hmac_mod.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return f"sha256={digest}"
+
+    def _create_waiting_task(self, global_config, issue_number=42):
+        from wowkmang.taskqueue.models import (
+            Task,
+            TaskResult,
+            TaskStatus,
+            TaskSourceInfo,
+            TaskSource,
+            task_to_yaml,
+        )
+        from wowkmang.taskqueue.task_queue import save_task, QueueDir
+
+        task = Task(
+            project="testproject",
+            repo="https://github.com/user/testproject",
+            task="Fix the bug",
+            source=TaskSourceInfo(
+                type=TaskSource.GITHUB_ISSUE,
+                issue_number=issue_number,
+            ),
+            allow_questions=True,
+        )
+        task.result = TaskResult(
+            status=TaskStatus.WAITING_FOR_INPUT,
+            questions=[{"message": "Which approach?", "choices": ["A", "B"]}],
+        )
+        # Save to waiting dir
+        waiting_dir = global_config.tasks_dir / "waiting"
+        waiting_dir.mkdir(exist_ok=True)
+        ts = task.created.strftime("%Y-%m-%dT%H-%M-%S")
+        path = waiting_dir / f"{ts}_{task.id}.yaml"
+        path.write_text(task_to_yaml(task))
+        return task
+
+    def test_comment_resumes_waiting_task(self, client, global_config):
+        task = self._create_waiting_task(global_config, issue_number=42)
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/testproject"},
+            "issue": {"number": 42},
+            "comment": {"body": "Use approach A"},
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_testsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "issue_comment",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "resumed"
+        assert data["task_id"] == task.id
+
+        # Verify task moved back to pending
+        pending_dir = global_config.tasks_dir / "pending"
+        pending_files = list(pending_dir.glob(f"*_{task.id}.yaml"))
+        assert len(pending_files) == 1
+
+    def test_comment_ignored_when_no_waiting_task(self, client):
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/testproject"},
+            "issue": {"number": 999},
+            "comment": {"body": "Hello"},
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_testsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "issue_comment",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "ignored"
+
+
 class TestGithubWebhook:
     def _sign(self, body: bytes, secret: str) -> str:
         digest = hmac_mod.new(secret.encode(), body, hashlib.sha256).hexdigest()

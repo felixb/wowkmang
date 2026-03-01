@@ -32,7 +32,7 @@ def tmp_projects_dir(tmp_path):
 def tmp_tasks_dir(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    for d in ["pending", "running", "done", "failed"]:
+    for d in ["pending", "running", "done", "failed", "waiting"]:
         (tasks_dir / d).mkdir()
     return tasks_dir
 

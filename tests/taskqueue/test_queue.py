@@ -9,11 +9,13 @@ from wowkmang.taskqueue.task_queue import (
     complete_task,
     ensure_queue_dirs,
     fail_task,
+    find_waiting_task_by_source,
     get_task,
     list_tasks,
     pick_next_task,
     prune_old_tasks,
     save_task,
+    wait_for_input,
 )
 
 
@@ -218,3 +220,50 @@ class TestPruneOldTasks:
 
     def test_returns_zero_when_empty(self, tmp_tasks_dir):
         assert prune_old_tasks(tmp_tasks_dir, retention_days=7) == 0
+
+
+class TestFindWaitingTaskBySource:
+    def _create_waiting(self, tasks_dir, **task_kwargs):
+        task = _make_task(**task_kwargs)
+        task.result = TaskResult(
+            status=TaskStatus.WAITING_FOR_INPUT,
+            questions=[{"message": "Q?"}],
+        )
+        path = save_task(tasks_dir, task)
+        running_path, picked = pick_next_task(tasks_dir)
+        wait_for_input(tasks_dir, running_path, picked)
+        return task
+
+    def test_finds_by_issue_number(self, tmp_tasks_dir):
+        task = self._create_waiting(
+            tmp_tasks_dir,
+            source=TaskSourceInfo(type=TaskSource.GITHUB_ISSUE, issue_number=42),
+        )
+        found = find_waiting_task_by_source(
+            tmp_tasks_dir, issue_number=42, pr_number=None
+        )
+        assert found is not None
+        assert found.id == task.id
+
+    def test_finds_by_pr_number(self, tmp_tasks_dir):
+        task = self._create_waiting(
+            tmp_tasks_dir,
+            source=TaskSourceInfo(type=TaskSource.GITHUB_PR, pr_number=99),
+        )
+        found = find_waiting_task_by_source(
+            tmp_tasks_dir, issue_number=None, pr_number=99
+        )
+        assert found is not None
+        assert found.id == task.id
+
+    def test_returns_none_when_not_found(self, tmp_tasks_dir):
+        assert (
+            find_waiting_task_by_source(tmp_tasks_dir, issue_number=999, pr_number=None)
+            is None
+        )
+
+    def test_returns_none_when_no_waiting_dir(self, tmp_path):
+        assert (
+            find_waiting_task_by_source(tmp_path, issue_number=1, pr_number=None)
+            is None
+        )

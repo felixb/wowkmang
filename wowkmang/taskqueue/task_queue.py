@@ -10,6 +10,7 @@ class QueueDir(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    WAITING = "waiting"
 
 
 STATUS_TO_DIR = {
@@ -18,6 +19,7 @@ STATUS_TO_DIR = {
     TaskStatus.COMPLETED: QueueDir.DONE,
     TaskStatus.FAILED: QueueDir.FAILED,
     TaskStatus.TIMEOUT: QueueDir.FAILED,
+    TaskStatus.WAITING_FOR_INPUT: QueueDir.WAITING,
 }
 
 
@@ -69,6 +71,37 @@ def complete_task(tasks_dir: Path, task_file: Path, task: Task) -> Path:
 
 def fail_task(tasks_dir: Path, task_file: Path, task: Task) -> Path:
     return _finish_task(tasks_dir, task_file, task, QueueDir.FAILED)
+
+
+def wait_for_input(tasks_dir: Path, task_file: Path, task: Task) -> Path:
+    return _finish_task(tasks_dir, task_file, task, QueueDir.WAITING)
+
+
+def resume_task(tasks_dir: Path, task_id: str) -> bool:
+    """Move a waiting task back to pending. Returns True if found and moved."""
+    waiting_dir = tasks_dir / QueueDir.WAITING
+    for path in waiting_dir.glob("*.yaml"):
+        if task_id in path.name:
+            dest = tasks_dir / QueueDir.PENDING / path.name
+            path.rename(dest)
+            return True
+    return False
+
+
+def find_waiting_task_by_source(
+    tasks_dir: Path, issue_number: int | None, pr_number: int | None
+) -> Task | None:
+    """Find a waiting task that matches the given source issue or PR number."""
+    waiting_dir = tasks_dir / QueueDir.WAITING
+    if not waiting_dir.exists():
+        return None
+    for path in waiting_dir.glob("*.yaml"):
+        task = task_from_yaml(path.read_text())
+        if issue_number and task.source.issue_number == issue_number:
+            return task
+        if pr_number and task.source.pr_number == pr_number:
+            return task
+    return None
 
 
 def get_task(tasks_dir: Path, task_id: str) -> Task | None:
