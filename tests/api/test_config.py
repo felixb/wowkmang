@@ -81,3 +81,13 @@ class TestFindProjectByRepo:
     def test_find_missing(self, tmp_projects_dir):
         projects = load_projects(tmp_projects_dir)
         assert find_project_by_repo("unknown/repo", projects) is None
+
+    def test_no_substring_match(self, tmp_projects_dir):
+        """A partial repo name must not match (security: prevents wrong project lookup)."""
+        projects = load_projects(tmp_projects_dir)
+        assert find_project_by_repo("user/test", projects) is None
+        assert find_project_by_repo("ser/testproject", projects) is None
+
+    def test_trailing_slash_ignored(self):
+        projects = {"p": ProjectConfig(name="p", repo="https://github.com/org/repo/")}
+        assert find_project_by_repo("org/repo", projects) is not None

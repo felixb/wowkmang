@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from wowkmang.executor.docker_runner import ContainerResult
 from wowkmang.executor.repo_cache import RepoCache
 
@@ -22,28 +24,6 @@ class TestCacheSubdir:
     def test_nested_path(self):
         result = RepoCache.cache_subdir("https://gitlab.com/org/group/project")
         assert result == "gitlab.com_org_group_project"
-
-
-class TestAuthedUrl:
-    def test_no_token_returns_original(self):
-        assert (
-            RepoCache._authed_url("https://github.com/u/p", None)
-            == "https://github.com/u/p"
-        )
-
-    def test_empty_token_returns_original(self):
-        assert (
-            RepoCache._authed_url("https://github.com/u/p", "")
-            == "https://github.com/u/p"
-        )
-
-    def test_injects_token(self):
-        result = RepoCache._authed_url("https://github.com/user/project", "ghp_abc123")
-        assert result == "https://x-access-token:ghp_abc123@github.com/user/project"
-
-    def test_preserves_path_and_suffix(self):
-        result = RepoCache._authed_url("https://github.com/user/project.git", "tok")
-        assert result == "https://x-access-token:tok@github.com/user/project.git"
 
 
 class TestPrepareWorkdir:
@@ -75,8 +55,25 @@ class TestPrepareWorkdir:
         assert command[1] == "-c"
         script = command[2]
         assert "github.com_user_project" in script
-        assert "x-access-token:ghp_tok@github.com" in script
         assert f"git checkout -b {branch}" in script
+
+    def test_token_not_in_script(self):
+        """Tokens must not appear in clone scripts — .netrc handles auth."""
+        docker_runner = _mock_docker_runner()
+        cache = RepoCache(docker_runner)
+
+        cache.prepare_workdir(
+            "https://github.com/user/project",
+            "main",
+            "vol",
+            "proj-vol",
+            "img",
+            github_token="ghp_secret_token",
+        )
+
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
+        assert "ghp_secret_token" not in script
+        assert "x-access-token" not in script
 
     def test_no_token_uses_plain_url(self):
         docker_runner = _mock_docker_runner()
@@ -109,6 +106,52 @@ class TestPrepareWorkdir:
             assert False, "Should have raised"
         except RuntimeError as e:
             assert "repo not found" in str(e)
+
+    def test_existing_branch_is_quoted(self):
+        docker_runner = _mock_docker_runner()
+        cache = RepoCache(docker_runner)
+
+        branch = cache.prepare_workdir(
+            "https://github.com/user/project",
+            "main",
+            "vol",
+            "proj-vol",
+            "img",
+            existing_branch="feature/my-branch",
+        )
+
+        assert branch == "feature/my-branch"
+        script = docker_runner.run_command.call_args.kwargs["command"][2]
+        assert "git checkout" in script
+        assert "feature/my-branch" in script
+
+    def test_malicious_branch_name_rejected(self):
+        docker_runner = _mock_docker_runner()
+        cache = RepoCache(docker_runner)
+
+        with pytest.raises(ValueError, match="Invalid branch name"):
+            cache.prepare_workdir(
+                "https://github.com/user/project",
+                "main",
+                "vol",
+                "proj-vol",
+                "img",
+                existing_branch="; curl evil.com #",
+            )
+
+    def test_branch_with_backticks_rejected(self):
+        docker_runner = _mock_docker_runner()
+        cache = RepoCache(docker_runner)
+
+        with pytest.raises(ValueError, match="Invalid branch name"):
+            cache.prepare_workdir(
+                "https://github.com/user/project",
+                "main",
+                "vol",
+                "proj-vol",
+                "img",
+                existing_branch="`rm -rf /`",
+            )
 
     def test_script_uses_cache_directly_no_workdir_copy(self):
         docker_runner = _mock_docker_runner()

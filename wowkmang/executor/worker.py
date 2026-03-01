@@ -302,9 +302,15 @@ class Worker:
         github_token: str,
         effective_uid: str,
     ) -> None:
-        """Pull image, seed credentials, chown volumes, setup gitignore, create log dir."""
+        """Pull image, seed credentials, setup netrc, chown volumes, setup gitignore, create log dir."""
         self.docker_runner.ensure_image(image, project)
         self._seed_credentials(project_volume, image, effective_uid)
+        self.docker_runner.setup_netrc(
+            project_volume=project_volume,
+            image=image,
+            github_token=github_token,
+            uid=effective_uid,
+        )
         self.docker_runner.chown_volume(
             image=image, work_volume=work_volume, uid=effective_uid
         )

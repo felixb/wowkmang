@@ -72,6 +72,7 @@ def find_project_by_repo(
     repo_full_name: str, projects: dict[str, ProjectConfig]
 ) -> ProjectConfig | None:
     for project in projects.values():
-        if repo_full_name in project.repo:
+        normalized = project.repo.rstrip("/")
+        if normalized.endswith(f"/{repo_full_name}") or normalized == repo_full_name:
             return project
     return None

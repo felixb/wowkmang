@@ -1,7 +1,14 @@
 import hashlib
 import hmac as hmac_mod
+import logging
 
-from wowkmang.api.auth import hash_token, verify_api_token, verify_github_signature
+from wowkmang.api.auth import (
+    Authenticator,
+    hash_token,
+    verify_api_token,
+    verify_github_signature,
+)
+from wowkmang.api.config import GlobalConfig
 
 
 class TestHashToken:
@@ -45,3 +52,18 @@ class TestVerifyGithubSignature:
 
     def test_missing_prefix(self):
         assert not verify_github_signature(b"body", "bad", "secret")
+
+
+class TestAuthenticatorWarning:
+    def test_warns_when_no_api_tokens(self, caplog):
+        config = GlobalConfig(api_tokens="")
+        with caplog.at_level(logging.WARNING, logger="wowkmang.api.auth"):
+            Authenticator(config, {})
+        assert "No API tokens configured" in caplog.text
+
+    def test_no_warning_when_tokens_present(self, caplog):
+        h = hash_token("mytoken")
+        config = GlobalConfig(api_tokens=h)
+        with caplog.at_level(logging.WARNING, logger="wowkmang.api.auth"):
+            Authenticator(config, {})
+        assert "No API tokens configured" not in caplog.text

@@ -1,9 +1,12 @@
 import logging
+import re
 import uuid
 
 from pydantic import BaseModel
 
 from wowkmang.api.config import ProjectConfig
+
+VALID_UID_RE = re.compile(r"^\d+:\d+$")
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,14 @@ class DockerRunner:
         self.default_uid = default_uid
         self.default_docker_image = default_docker_image
         self._pulled_images: set[str] = set()
+
+    @staticmethod
+    def _validate_uid(uid: str) -> str:
+        if not VALID_UID_RE.match(uid):
+            raise ValueError(
+                f"Invalid container UID format: {uid!r} (expected UID:GID)"
+            )
+        return uid
 
     def resolve_image(self, project: ProjectConfig) -> str:
         """Return the Docker image to use: project-specific if set, else global default."""
@@ -120,6 +131,37 @@ class DockerRunner:
             user=uid,
         )
 
+    def setup_netrc(
+        self,
+        project_volume: str,
+        image: str,
+        github_token: str,
+        uid: str = "1000:1000",
+    ) -> None:
+        """Write a .netrc file to the project volume for git authentication.
+
+        This avoids embedding tokens in URLs where they leak into logs.
+        """
+        if not github_token:
+            return
+        volumes = {
+            project_volume: {"bind": "/cache", "mode": "rw"},
+        }
+        # .netrc format: machine <host> login <user> password <token>
+        script = (
+            "printf 'machine github.com\\nlogin x-access-token\\npassword %s\\n' "
+            '"$_NETRC_TOKEN" > /cache/.netrc && chmod 600 /cache/.netrc'
+        )
+        self._run_container(
+            image=image,
+            command=["sh", "-c", script],
+            environment={"_NETRC_TOKEN": github_token},
+            volumes=volumes,
+            timeout_seconds=30,
+            working_dir="/",
+            user=uid,
+        )
+
     def remove_volume(self, name: str) -> None:
         """Remove a Docker named volume."""
         try:
@@ -163,6 +205,7 @@ class DockerRunner:
         volumes = {
             work_volume: {"bind": "/workspace", "mode": "rw"},
         }
+        self._validate_uid(uid)
         script = f"chown -R {uid} /workspace"
         return self._run_container(
             image=image,
@@ -183,6 +226,7 @@ class DockerRunner:
         volumes = {
             project_volume: {"bind": "/cache", "mode": "rw"},
         }
+        self._validate_uid(uid)
         script = f"mkdir -p /cache && chown -R {uid} /cache"
         return self._run_container(
             image=image,

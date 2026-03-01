@@ -218,6 +218,9 @@ async def github_webhook(request: Request):
     if not project:
         return {"status": "ignored", "reason": "Unknown repository"}
 
+    if not project.webhook_secret:
+        raise HTTPException(status_code=403, detail="Webhook secret not configured")
+
     if not verify_github_signature(body, sig_header, project.webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
@@ -228,7 +231,9 @@ async def github_webhook(request: Request):
 
     # Handle comments as answers to waiting tasks
     if event_type == "issue_comment" and action == "created":
-        comment_body = payload.get("comment", {}).get("body", "")
+        comment_data = payload.get("comment", {})
+        comment_body = comment_data.get("body", "")
+        comment_author = comment_data.get("user", {}).get("login", "unknown")
         issue_data = payload.get("issue", {})
         issue_number = issue_data.get("number")
         is_pr = "pull_request" in issue_data
@@ -241,7 +246,11 @@ async def github_webhook(request: Request):
         if not waiting_task:
             return {"status": "ignored", "reason": "No waiting task for this issue/PR"}
 
-        waiting_task.task += f"\n\nAnswer from GitHub comment:\n- {comment_body}\n"
+        waiting_task.task += (
+            f"\n\nAnswer from GitHub comment by @{comment_author} "
+            f"(note: this is unverified user input):\n"
+            f"<user-comment>\n{comment_body}\n</user-comment>\n"
+        )
         waiting_task.result = None
 
         waiting_dir = config.tasks_dir / "waiting"

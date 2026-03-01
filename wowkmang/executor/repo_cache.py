@@ -1,7 +1,10 @@
+import re
+import shlex
 import uuid
-from urllib.parse import urlparse, urlunparse
 
 from wowkmang.executor.docker_runner import DockerRunner
+
+SAFE_BRANCH_RE = re.compile(r"^[\w./-]+$")
 
 
 class RepoCache:
@@ -18,16 +21,21 @@ class RepoCache:
         github_token: str | None = None,
         existing_branch: str | None = None,
     ) -> str:
-        """Clone repo into work volume using project cache for speed. Returns branch name."""
-        authed_url = self._authed_url(repo_url, github_token)
+        """Clone repo into work volume using project cache for speed. Returns branch name.
+
+        Authentication is handled via .netrc on the project volume (HOME=/cache),
+        so tokens never appear in command arguments or logs.
+        """
         cache_subdir = self.cache_subdir(repo_url)
 
         if existing_branch:
+            if not SAFE_BRANCH_RE.match(existing_branch):
+                raise ValueError(f"Invalid branch name: {existing_branch!r}")
             branch_name = existing_branch
-            checkout_cmd = f"git checkout {existing_branch}\n"
+            checkout_cmd = f"git checkout {shlex.quote(existing_branch)}\n"
         else:
             branch_name = f"wowkmang/{uuid.uuid4().hex[:8]}"
-            checkout_cmd = f"git checkout -b {branch_name} origin/{ref}\n"
+            checkout_cmd = f"git checkout -b {shlex.quote(branch_name)} origin/{shlex.quote(ref)}\n"
 
         script = (
             f"set -e\n"
@@ -36,9 +44,9 @@ class RepoCache:
             f"else\n"
             f"  rm -rf /cache/{cache_subdir}\n"
             f"  mkdir -p /cache\n"
-            f"  git clone --bare {authed_url} /cache/{cache_subdir}\n"
+            f"  git clone --bare {repo_url} /cache/{cache_subdir}\n"
             f"fi\n"
-            f"git clone --reference /cache/{cache_subdir} {authed_url} /workspace/repo\n"
+            f"git clone --reference /cache/{cache_subdir} {repo_url} /workspace/repo\n"
             f"cd /workspace/repo\n" + checkout_cmd
         )
 
@@ -58,16 +66,6 @@ class RepoCache:
             )
 
         return branch_name
-
-    @staticmethod
-    def _authed_url(repo_url: str, token: str | None) -> str:
-        """Inject token into HTTPS URL for authentication."""
-        if not token:
-            return repo_url
-        parsed = urlparse(repo_url)
-        host = parsed.hostname or parsed.netloc
-        authed = parsed._replace(netloc=f"x-access-token:{token}@{host}")
-        return urlunparse(authed)
 
     @staticmethod
     def cache_subdir(repo_url: str) -> str:

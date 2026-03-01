@@ -524,6 +524,77 @@ class TestChownProjectVolume:
         assert "chown -R 2000:2000 /cache" in script
 
 
+class TestSetupNetrc:
+    def test_writes_netrc_with_token(self):
+        container = _mock_container(exit_code=0, logs=b"")
+        docker_client = _mock_docker_client(container)
+        runner = DockerRunner(docker_client)
+
+        runner.setup_netrc(
+            project_volume="proj-vol",
+            image="img:latest",
+            github_token="ghp_secret",
+            uid="1000:1000",
+        )
+
+        docker_client.containers.run.assert_called_once()
+        kwargs = docker_client.containers.run.call_args.kwargs
+        assert kwargs["volumes"]["proj-vol"]["bind"] == "/cache"
+        # Token is passed via env var, not in the command
+        assert kwargs["environment"]["_NETRC_TOKEN"] == "ghp_secret"
+        script = kwargs["command"][2]
+        assert ".netrc" in script
+        assert "chmod 600" in script
+        # Token must NOT appear in the command itself
+        assert "ghp_secret" not in script
+
+    def test_skips_when_no_token(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(docker_client)
+
+        runner.setup_netrc(
+            project_volume="proj-vol",
+            image="img",
+            github_token="",
+        )
+
+        docker_client.containers.run.assert_not_called()
+
+
+class TestValidateUid:
+    def test_valid_uid(self):
+        assert DockerRunner._validate_uid("1000:1000") == "1000:1000"
+        assert DockerRunner._validate_uid("0:0") == "0:0"
+
+    def test_rejects_injection(self):
+        with pytest.raises(ValueError, match="Invalid container UID format"):
+            DockerRunner._validate_uid("1000:1000 /etc && rm -rf /")
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError, match="Invalid container UID format"):
+            DockerRunner._validate_uid("")
+
+    def test_rejects_no_colon(self):
+        with pytest.raises(ValueError, match="Invalid container UID format"):
+            DockerRunner._validate_uid("1000")
+
+    def test_chown_volume_rejects_bad_uid(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(docker_client)
+
+        with pytest.raises(ValueError, match="Invalid container UID format"):
+            runner.chown_volume(image="img", work_volume="vol", uid="; rm -rf /")
+
+    def test_chown_project_volume_rejects_bad_uid(self):
+        docker_client = _mock_docker_client()
+        runner = DockerRunner(docker_client)
+
+        with pytest.raises(ValueError, match="Invalid container UID format"):
+            runner.chown_project_volume(
+                image="img", project_volume="vol", uid="$(evil)"
+            )
+
+
 class TestRunCommand:
     def test_passes_user_to_container(self):
         container = _mock_container()

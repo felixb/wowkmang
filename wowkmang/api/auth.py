@@ -1,10 +1,13 @@
 import hashlib
 import hmac
+import logging
 import sys
 
 from fastapi import HTTPException, Request
 
 from wowkmang.api.config import GlobalConfig, find_project_by_repo, ProjectConfig
+
+logger = logging.getLogger(__name__)
 
 
 def hash_token(token: str) -> str:
@@ -30,6 +33,11 @@ class Authenticator:
         self.token_hashes = [
             h.strip() for h in config.api_tokens.split(",") if h.strip()
         ]
+        if not self.token_hashes:
+            logger.warning(
+                "No API tokens configured (WOWKMANG_API_TOKENS is empty) "
+                "— all authenticated endpoints will return 401"
+            )
         self.projects = projects
 
     async def __call__(self, request: Request) -> dict:

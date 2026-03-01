@@ -5,11 +5,13 @@ Wowkmang orchestrates claude code tasks
 ## Basics
 
 Language: python
+Package structure: `wowkmang/api/`, `wowkmang/executor/`, `wowkmang/taskqueue/`
 Test framework: pytest, run `uv run pytest`
 Formatting: black (python), mdformat (markdown), yamlfix (yaml), jq (json)
 Style: imports at top of file, never inside functions
 Deployable: docker
 Claude models: only specify short name like opus, sonnet, haiku
+Auth module: `python -m wowkmang.api.auth`
 
 ## Rules
 
