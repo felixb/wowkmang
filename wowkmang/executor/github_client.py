@@ -2,7 +2,7 @@ import json
 import logging
 from pathlib import Path
 
-import httpx
+from github import Auth, Github, GithubException
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +38,7 @@ def fetch_and_save_comments(
 class GitHubClient:
     def __init__(self, token: str, repo: str):
         self.repo = repo  # "user/project"
-        self._client = httpx.Client(
-            base_url=f"https://api.github.com/repos/{repo}",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            timeout=30,
-        )
+        self._repo = Github(auth=Auth.Token(token)).get_repo(repo)
 
     def create_pr(
         self,
@@ -57,98 +49,55 @@ class GitHubClient:
         draft: bool = False,
     ) -> dict:
         """Create a pull request via GitHub API."""
-        response = self._client.post(
-            "/pulls",
-            json={
-                "title": title,
-                "body": body,
-                "head": branch,
-                "base": base,
-                "draft": draft,
-            },
+        pr = self._repo.create_pull(
+            title=title,
+            body=body,
+            head=branch,
+            base=base,
+            draft=draft,
         )
-        self._raise_for_status(response, "create PR")
-        return response.json()
+        return {"number": pr.number, "html_url": pr.html_url}
 
     def add_labels(self, issue_number: int, labels: list[str]) -> None:
         """Add labels to an issue or PR."""
-        response = self._client.post(
-            f"/issues/{issue_number}/labels",
-            json={"labels": labels},
-        )
-        self._raise_for_status(response, "add labels")
+        self._repo.get_issue(issue_number).add_to_labels(*labels)
 
     def get_issue_comments(self, issue_number: int) -> list[dict]:
         """Fetch comments on an issue."""
-        response = self._client.get(
-            f"/issues/{issue_number}/comments",
-            params={"per_page": 100},
-        )
-        self._raise_for_status(response, "get issue comments")
         return [
-            {"user": c["user"]["login"], "body": c["body"]} for c in response.json()
+            {"user": c.user.login, "body": c.body}
+            for c in self._repo.get_issue(issue_number).get_comments()
         ]
 
     def get_pr_comments(self, pr_number: int) -> list[dict]:
         """Fetch both issue comments and review comments on a PR."""
-        # Issue-style comments
-        issue_resp = self._client.get(
-            f"/issues/{pr_number}/comments",
-            params={"per_page": 100},
-        )
-        self._raise_for_status(issue_resp, "get PR issue comments")
-
-        # Review comments (inline)
-        review_resp = self._client.get(
-            f"/pulls/{pr_number}/comments",
-            params={"per_page": 100},
-        )
-        self._raise_for_status(review_resp, "get PR review comments")
-
         comments = []
-        for c in issue_resp.json():
-            comments.append({"user": c["user"]["login"], "body": c["body"]})
-        for c in review_resp.json():
+        for c in self._repo.get_issue(pr_number).get_comments():
+            comments.append({"user": c.user.login, "body": c.body})
+        for c in self._repo.get_pull(pr_number).get_review_comments():
             comments.append(
                 {
-                    "user": c["user"]["login"],
-                    "body": c["body"],
-                    "path": c.get("path"),
+                    "user": c.user.login,
+                    "body": c.body,
+                    "path": c.path,
                 }
             )
         return comments
 
     def get_pr_branch(self, pr_number: int) -> str:
         """Get the head branch name of a PR."""
-        response = self._client.get(f"/pulls/{pr_number}")
-        self._raise_for_status(response, "get PR branch")
-        return response.json()["head"]["ref"]
+        return self._repo.get_pull(pr_number).head.ref
 
     def create_comment(self, issue_number: int, body: str) -> dict:
         """Post a comment on an issue or PR."""
-        response = self._client.post(
-            f"/issues/{issue_number}/comments",
-            json={"body": body},
-        )
-        self._raise_for_status(response, "create comment")
-        return response.json()
+        comment = self._repo.get_issue(issue_number).create_comment(body)
+        return {"id": comment.id, "body": comment.body}
 
     def remove_label(self, issue_number: int, label: str) -> None:
         """Remove a label from an issue or PR."""
-        response = self._client.delete(
-            f"/issues/{issue_number}/labels/{label}",
-        )
-        # 404 is fine — label might already be removed
-        if response.status_code != 404:
-            self._raise_for_status(response, "remove label")
-
-    @staticmethod
-    def _raise_for_status(response: httpx.Response, action: str) -> None:
-        """Raise on non-2xx with a useful error message."""
-        if response.is_success:
-            return
-        raise httpx.HTTPStatusError(
-            f"GitHub API error on {action}: {response.status_code} {response.text}",
-            request=response.request,
-            response=response,
-        )
+        try:
+            self._repo.get_issue(issue_number).remove_from_labels(label)
+        except GithubException as e:
+            # 404 is fine — label might already be removed
+            if e.status != 404:
+                raise
