@@ -53,6 +53,7 @@ class ProjectConfig(BaseModel):
     github_labels: GitHubLabels = Field(default_factory=GitHubLabels)
     webhook_secret: str = ""
     container_uid: str = ""
+    allowed_users: list[str] = Field(default_factory=list)
 
 
 def load_projects(projects_dir: Path) -> dict[str, ProjectConfig]:

@@ -333,3 +333,92 @@ class TestFetchAndSaveComments:
             )
 
             assert result is None
+
+    def test_filters_comments_by_allowed_users(self, tmp_path):
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
+
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+
+            alice = MagicMock()
+            alice.user.login = "alice"
+            alice.body = "Allowed comment"
+            bob = MagicMock()
+            bob.user.login = "bob"
+            bob.body = "Disallowed comment"
+            mock_issue.get_comments.return_value = [alice, bob]
+
+            context_dir = tmp_path / "context"
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=10,
+                task_id="filtered",
+                context_dir=context_dir,
+                allowed_users=["alice"],
+            )
+
+            assert result is not None
+            data = json.loads((context_dir / "filtered_comments.json").read_text())
+            assert len(data) == 1
+            assert data[0]["user"] == "alice"
+
+    def test_allowed_users_empty_returns_none_when_all_filtered(self, tmp_path):
+        """When allowed_users filters out all comments, returns None."""
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
+
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+
+            stranger = MagicMock()
+            stranger.user.login = "stranger"
+            stranger.body = "Random comment"
+            mock_issue.get_comments.return_value = [stranger]
+
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=10,
+                task_id="allfiltered",
+                context_dir=tmp_path / "context",
+                allowed_users=["alice", "bob"],
+            )
+
+            assert result is None
+
+    def test_no_allowed_users_includes_all_comments(self, tmp_path):
+        """Without allowed_users filter, all comments are included."""
+        with patch("wowkmang.executor.github_client.Github") as MockGithub:
+            mock_repo = MagicMock()
+            MockGithub.return_value.get_repo.return_value = mock_repo
+
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+
+            alice = MagicMock()
+            alice.user.login = "alice"
+            alice.body = "Comment A"
+            bob = MagicMock()
+            bob.user.login = "bob"
+            bob.body = "Comment B"
+            mock_issue.get_comments.return_value = [alice, bob]
+
+            context_dir = tmp_path / "context"
+            result = fetch_and_save_comments(
+                github_token="ghp_test123",
+                repo_full_name="user/project",
+                source_type="github_issue",
+                source_number=10,
+                task_id="nofilter",
+                context_dir=context_dir,
+            )
+
+            assert result is not None
+            data = json.loads((context_dir / "nofilter_comments.json").read_text())
+            assert len(data) == 2

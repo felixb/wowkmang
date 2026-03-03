@@ -229,6 +229,8 @@ async def github_webhook(request: Request):
 
     github_token = project.github_token or config.github_token
 
+    CONTINUE_TRIGGER = "@wowkmang continue"
+
     # Handle comments as answers to waiting tasks
     if event_type == "issue_comment" and action == "created":
         comment_data = payload.get("comment", {})
@@ -238,6 +240,13 @@ async def github_webhook(request: Request):
         issue_number = issue_data.get("number")
         is_pr = "pull_request" in issue_data
 
+        # If allowlist configured: require trigger phrase and authorized user
+        if project.allowed_users:
+            if CONTINUE_TRIGGER not in comment_body.lower():
+                return {"status": "ignored", "reason": "Not a wowkmang command"}
+            if comment_author not in project.allowed_users:
+                return {"status": "ignored", "reason": "User not authorized"}
+
         waiting_task = find_waiting_task_by_source(
             config.tasks_dir,
             issue_number=None if is_pr else issue_number,
@@ -246,11 +255,25 @@ async def github_webhook(request: Request):
         if not waiting_task:
             return {"status": "ignored", "reason": "No waiting task for this issue/PR"}
 
-        waiting_task.task += (
-            f"\n\nAnswer from GitHub comment by @{comment_author} "
-            f"(note: this is unverified user input):\n"
-            f"<user-comment>\n{comment_body}\n</user-comment>\n"
-        )
+        if project.allowed_users:
+            # Re-fetch all current comments so community answers are included
+            source_type = "github_pr" if is_pr else "github_issue"
+            waiting_task.comments_file = fetch_and_save_comments(
+                github_token=github_token,
+                repo_full_name=repo_full_name,
+                source_type=source_type,
+                source_number=issue_number,
+                task_id=waiting_task.id,
+                context_dir=config.tasks_dir / "context",
+                allowed_users=project.allowed_users,
+            )
+            waiting_task.task += f"\n\nContinuation approved by @{comment_author}."
+        else:
+            waiting_task.task += (
+                f"\n\nAnswer from GitHub comment by @{comment_author} "
+                f"(note: this is unverified user input):\n"
+                f"<user-comment>\n{comment_body}\n</user-comment>\n"
+            )
         waiting_task.result = None
 
         waiting_dir = config.tasks_dir / "waiting"
@@ -287,6 +310,7 @@ async def github_webhook(request: Request):
             source_number=issue["number"],
             task_id=task.id,
             context_dir=config.tasks_dir / "context",
+            allowed_users=project.allowed_users or None,
         )
 
         save_task(config.tasks_dir, task)
@@ -319,6 +343,7 @@ async def github_webhook(request: Request):
             source_number=pr["number"],
             task_id=task.id,
             context_dir=config.tasks_dir / "context",
+            allowed_users=project.allowed_users or None,
         )
 
         save_task(config.tasks_dir, task)

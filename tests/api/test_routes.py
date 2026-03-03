@@ -1,6 +1,7 @@
 import hashlib
 import hmac as hmac_mod
 import json
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -350,6 +351,206 @@ class TestCommentWebhook:
         )
         assert resp.status_code == 202
         assert resp.json()["status"] == "ignored"
+
+    def _create_waiting_task_for_allowlist_project(
+        self, global_config, issue_number=42
+    ):
+        from wowkmang.taskqueue.models import (
+            Task,
+            TaskResult,
+            TaskStatus,
+            TaskSourceInfo,
+            TaskSource,
+            task_to_yaml,
+        )
+
+        task = Task(
+            project="allowedproject",
+            repo="https://github.com/user/allowedproject",
+            task="Fix the bug",
+            source=TaskSourceInfo(
+                type=TaskSource.GITHUB_ISSUE,
+                issue_number=issue_number,
+            ),
+            allow_questions=True,
+        )
+        task.result = TaskResult(
+            status=TaskStatus.WAITING_FOR_INPUT,
+            questions=[{"message": "Which approach?", "choices": ["A", "B"]}],
+        )
+        waiting_dir = global_config.tasks_dir / "waiting"
+        waiting_dir.mkdir(exist_ok=True)
+        ts = task.created.strftime("%Y-%m-%dT%H-%M-%S")
+        path = waiting_dir / f"{ts}_{task.id}.yaml"
+        path.write_text(task_to_yaml(task))
+        return task
+
+    def test_comment_ignored_without_trigger_phrase(self, client, global_config):
+        """With allowlist: comment without @wowkmang continue is ignored."""
+        self._create_waiting_task_for_allowlist_project(global_config, issue_number=42)
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/allowedproject"},
+            "issue": {"number": 42},
+            "comment": {
+                "body": "Use approach A",
+                "user": {"login": "trusteduser"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_allowedsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "issue_comment",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "ignored"
+        assert resp.json()["reason"] == "Not a wowkmang command"
+
+    def test_comment_ignored_from_unauthorized_user(self, client, global_config):
+        """With allowlist: @wowkmang continue from non-listed user is ignored."""
+        self._create_waiting_task_for_allowlist_project(global_config, issue_number=43)
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/allowedproject"},
+            "issue": {"number": 43},
+            "comment": {
+                "body": "@wowkmang continue",
+                "user": {"login": "randomuser"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_allowedsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "issue_comment",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "ignored"
+        assert resp.json()["reason"] == "User not authorized"
+
+    def test_comment_refetches_all_comments(self, client, global_config):
+        """With allowlist: resume re-fetches all comments and updates comments_file."""
+        task = self._create_waiting_task_for_allowlist_project(
+            global_config, issue_number=44
+        )
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/allowedproject"},
+            "issue": {"number": 44},
+            "comment": {
+                "body": "@wowkmang continue",
+                "user": {"login": "trusteduser"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_allowedsecret")
+
+        with patch("wowkmang.api.routes.fetch_and_save_comments") as mock_fetch:
+            mock_fetch.return_value = "/tmp/fake_comments.json"
+            resp = client.post(
+                "/webhooks/github",
+                content=body,
+                headers={
+                    "x-hub-signature-256": sig,
+                    "x-github-event": "issue_comment",
+                    "content-type": "application/json",
+                },
+            )
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "resumed"
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args.kwargs
+        assert call_kwargs["allowed_users"] == ["trusteduser", "admin"]
+        assert call_kwargs["source_number"] == 44
+
+        # Verify task updated with approval note, not raw comment
+        from wowkmang.taskqueue.task_queue import get_task
+
+        updated = get_task(global_config.tasks_dir, task.id)
+        assert "Continuation approved by @trusteduser" in updated.task
+        assert "@wowkmang continue" not in updated.task
+
+    def test_no_allowlist_preserves_old_behavior(self, client, global_config):
+        """Without allowlist: any comment resumes the task and body is appended."""
+        task = self._create_waiting_task(global_config, issue_number=55)
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/testproject"},
+            "issue": {"number": 55},
+            "comment": {
+                "body": "Use approach B",
+                "user": {"login": "anyuser"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_testsecret")
+        resp = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "x-hub-signature-256": sig,
+                "x-github-event": "issue_comment",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "resumed"
+
+        from wowkmang.taskqueue.task_queue import get_task
+
+        updated = get_task(global_config.tasks_dir, task.id)
+        assert "Use approach B" in updated.task
+        assert "<user-comment>" in updated.task
+
+    def test_allowlist_resumes_with_trigger(self, client, global_config):
+        """With allowlist: authorized user with trigger phrase resumes task."""
+        task = self._create_waiting_task_for_allowlist_project(
+            global_config, issue_number=60
+        )
+
+        payload = {
+            "action": "created",
+            "repository": {"full_name": "user/allowedproject"},
+            "issue": {"number": 60},
+            "comment": {
+                "body": "@wowkmang continue please",
+                "user": {"login": "admin"},
+            },
+        }
+        body = json.dumps(payload).encode()
+        sig = self._sign(body, "whsec_allowedsecret")
+
+        with patch("wowkmang.api.routes.fetch_and_save_comments") as mock_fetch:
+            mock_fetch.return_value = None
+            resp = client.post(
+                "/webhooks/github",
+                content=body,
+                headers={
+                    "x-hub-signature-256": sig,
+                    "x-github-event": "issue_comment",
+                    "content-type": "application/json",
+                },
+            )
+
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "resumed"
+        assert resp.json()["task_id"] == task.id
 
 
 class TestGithubWebhook:

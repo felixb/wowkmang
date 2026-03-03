@@ -95,6 +95,13 @@ github_labels:
   trigger: wowkmang
 
 webhook_secret: whsec_xxxxxxxxxxxx
+
+# Optional: restrict who can trigger continuation of waiting tasks.
+# When set, only these GitHub users can resume tasks via "@wowkmang continue".
+# Comments from non-listed users are also filtered from initial task context.
+allowed_users:
+  - yourname
+  - trustedcolleague
 ```
 
 ## Authentication
@@ -118,6 +125,20 @@ Authorization: Bearer your-token
 ### GitHub webhooks
 
 Each project config has a `webhook_secret`. GitHub signs webhook payloads with HMAC-SHA256 — wowkmang verifies the `X-Hub-Signature-256` header on every webhook request.
+
+## Security
+
+### Prompt injection via GitHub comments
+
+Without `allowed_users`, **any GitHub user who can comment on issues or PRs can influence Claude's prompts**. This is a prompt injection risk on public repositories.
+
+When `allowed_users` is configured:
+
+- Waiting tasks are only resumed when an allowed user posts a comment containing `@wowkmang continue`.
+- On resumption, all current comments are re-fetched from GitHub but filtered to only include comments from allowed users.
+- At task creation time, comments from non-allowed users are stripped from the initial context.
+
+**Recommendation:** Always set `allowed_users` for public repositories.
 
 ## API
 

@@ -68,7 +68,9 @@ class TestLoadProjects:
             yaml.dump({"name": "second", "repo": "https://github.com/a/b"})
         )
         projects = load_projects(tmp_projects_dir)
-        assert len(projects) == 2
+        assert "second" in projects
+        assert "testproject" in projects
+        assert "allowedproject" in projects
 
 
 class TestFindProjectByRepo:

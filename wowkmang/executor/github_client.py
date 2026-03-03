@@ -14,14 +14,21 @@ def fetch_and_save_comments(
     source_number: int,
     task_id: str,
     context_dir: Path,
+    allowed_users: list[str] | None = None,
 ) -> str | None:
-    """Fetch comments from GitHub and save to a context file. Returns file path."""
+    """Fetch comments from GitHub and save to a context file. Returns file path.
+
+    If allowed_users is set, only comments from those users are included.
+    """
     try:
         gh = GitHubClient(token=github_token, repo=repo_full_name)
         if source_type == "github_pr":
             comments = gh.get_pr_comments(source_number)
         else:
             comments = gh.get_issue_comments(source_number)
+
+        if allowed_users:
+            comments = [c for c in comments if c["user"] in allowed_users]
 
         if not comments:
             return None
