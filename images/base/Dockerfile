@@ -19,7 +19,7 @@ RUN apt-get update && \
 RUN pip3 install --no-cache-dir --break-system-packages pre-commit
 
 # Install Claude Code CLI
-ENV CLAUDE_CODE_VERSION=2.1.100
+ENV CLAUDE_CODE_VERSION=2.1.101
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Add GitHub SSH host keys
